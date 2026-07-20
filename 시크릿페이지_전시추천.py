@@ -993,11 +993,19 @@ with st.sidebar:
     # 게시할 주차의 트렌드를 미리 보려는 것이므로, 전년 '동주차'가 아니라
     # 전년 '다음 주차'를 기본값으로 잡는다. 예: 26_7_4 → 25_8_1
     prev_code = get_prev_week_code(sel_week)  # 26_7_4 → 25_7_4
-    mall_codes = {mall_week_to_code(x) for x in avail_mall_weeks}
+    # 주차코드 → CSV 원본 표기. 코드로 계산한 주차를 데이터 표기로 되돌릴 때 쓴다.
+    mall_week_by_code = {mall_week_to_code(x): x for x in avail_mall_weeks}
+    mall_codes = set(mall_week_by_code)
     target_prev_code = (
         get_next_week_code(prev_code, mall_codes or None) if prev_code else None
     )
-    auto_prev_mall = code_to_mall_week(target_prev_code) if target_prev_code else ''
+    # 데이터에 있는 표기를 우선 쓴다. code_to_mall_week 가 만드는 '07월' 형식이
+    # CSV 표기('7월' 등)와 다르면 목록에서 못 찾아 엉뚱한 주차가 기본 선택된다.
+    auto_prev_mall = ''
+    if target_prev_code:
+        auto_prev_mall = mall_week_by_code.get(
+            target_prev_code, code_to_mall_week(target_prev_code)
+        )
 
     if avail_mall_weeks:
         default_idx = avail_mall_weeks.index(auto_prev_mall) if auto_prev_mall in avail_mall_weeks else 0
@@ -1084,8 +1092,15 @@ if run_btn:
             df1 = analyze_mall_top20(st.session_state.df_mall, sel_prev_mall)
 
             # 전주비 신장: 선택된 전년 비교 주차(=게시 대상 주차) 직전 주차를 기준으로 삼는다.
-            base_prev_mall = code_to_mall_week(
-                get_prev_adjacent_week_code(mall_week_to_code(sel_prev_mall), mall_codes or None)
+            #
+            # 기준 주차는 코드로 계산한 뒤 반드시 '데이터에 실제로 있는 표기'로
+            # 되돌려야 한다. code_to_mall_week 는 월을 두 자리로 채우므로
+            # ('2025년 07월 4주차') CSV 표기가 다르면 조용히 매칭에 실패한다.
+            base_code = get_prev_adjacent_week_code(
+                mall_week_to_code(sel_prev_mall), mall_codes or None
+            )
+            base_prev_mall = mall_week_by_code.get(
+                base_code, code_to_mall_week(base_code) if base_code else ''
             )
             df_wow = analyze_mall_wow_growth(
                 st.session_state.df_mall, base_prev_mall, sel_prev_mall
@@ -1116,6 +1131,12 @@ if run_btn:
         checks = []
         checks.append(f"분석1 브랜드: {len(df1)}개 (전년 몰전체 {sel_prev_mall})")
         checks.append(f"분석2 브랜드: {len(df_wow)}개 (전주비 {base_prev_mall}→{sel_prev_mall})")
+        if df_wow.empty:
+            st.warning(
+                f"전주비 신장 결과가 비어 있어 해당 가중치({w_wow:.0%})가 "
+                f"최종 선정에 반영되지 않았습니다. "
+                f"기준 주차 '{base_prev_mall}' 가 몰전체 데이터에 있는지 확인해주세요."
+            )
         checks.append(f"분석3 브랜드: {len(df2)}개 (제휴 볼륨 {sel_week})")
         checks.append(f"분석4 브랜드: {len(df3)}개 (전년비 신장)")
         checks.append(f"최종 선정: {len(df4)}개")
