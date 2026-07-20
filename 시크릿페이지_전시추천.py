@@ -244,6 +244,28 @@ def get_prev_week_code(code):
     except:
         return None
 
+def get_next_week_code(code, available_codes=None):
+    """
+    '25_7_4' → '25_8_1' (한 주 뒤 주차)
+
+    한 달이 4주인지 5주인지는 달마다 달라 산술만으로 정할 수 없다.
+    데이터에 실제 존재하는 주차 목록(available_codes)이 있으면 그걸 기준으로
+    다음 주차가 같은 달에 있는지 판단하고, 없으면 다음 달 1주차로 넘긴다.
+    목록이 없을 때는 5주차까지 있을 수 있다고 보고 판단한다.
+    """
+    try:
+        y, m, w = (int(x) for x in code.split("_"))
+    except Exception:
+        return None
+
+    nxt = f"{y}_{m}_{w + 1}"
+    if available_codes is not None:
+        if nxt in available_codes:
+            return nxt
+    elif w < 5:
+        return nxt
+    return f"{y}_{m + 1}_1" if m < 12 else f"{y + 1}_1_1"
+
 def build_week_map(df_pivot):
     """피벗 E열↔G열: {날짜str: 주차코드}"""
     wmap = {}
@@ -874,12 +896,18 @@ with st.sidebar:
         sel_week = st.text_input("분석 주차 (직접 입력, 예: 26_6_3)", value='26_6_3')
 
     # 전년 비교 주차: 몰전체 CSV 주차 목록에서 선택
-    prev_code = get_prev_week_code(sel_week)  # e.g. 25_6_3
-    auto_prev_mall = code_to_mall_week(prev_code) if prev_code else ''
-
     avail_mall_weeks = []
     if st.session_state.df_mall is not None:
         avail_mall_weeks = sorted(st.session_state.df_mall['결제_주차'].unique())
+
+    # 게시할 주차의 트렌드를 미리 보려는 것이므로, 전년 '동주차'가 아니라
+    # 전년 '다음 주차'를 기본값으로 잡는다. 예: 26_7_4 → 25_8_1
+    prev_code = get_prev_week_code(sel_week)  # 26_7_4 → 25_7_4
+    mall_codes = {mall_week_to_code(x) for x in avail_mall_weeks}
+    target_prev_code = (
+        get_next_week_code(prev_code, mall_codes or None) if prev_code else None
+    )
+    auto_prev_mall = code_to_mall_week(target_prev_code) if target_prev_code else ''
 
     if avail_mall_weeks:
         default_idx = avail_mall_weeks.index(auto_prev_mall) if auto_prev_mall in avail_mall_weeks else 0
@@ -891,6 +919,7 @@ with st.sidebar:
         sel_prev_mall = st.text_input("전년 비교 주차 (예: 2025년 06월 3주차)", value=auto_prev_mall)
 
     st.caption(f"분석: `{sel_week}` ↔ 전년: `{mall_week_to_code(sel_prev_mall) if sel_prev_mall else '-'}`")
+    st.caption("전년 비교는 분석 주차의 **다음 주차**를 기본값으로 잡습니다 (예: 26_7_4 → 25_8_1).")
 
     st.markdown("---")
     with st.expander("⚙️ 가중치 설정"):
@@ -1075,8 +1104,8 @@ def render_table_tab(tab, num, title, desc, chip_cls, chip_txt, df_key,
         st.markdown("</div>", unsafe_allow_html=True)
 
 render_table_tab(
-    tab1, "1", "전년 몰전체 해당 주차 판매 TOP 20",
-    "기준: 2025년 몰전체 CSV · 거래액 내림차순",
+    tab1, "1", "전년 몰전체 다음 주차 판매 TOP 20",
+    "기준: 2025년 몰전체 CSV · 분석 주차의 다음 주차 · 거래액 내림차순",
     "trend", "트렌드 35%", "df1",
     fmt_cols={'거래액': fmt_amt, '고객수': fmt_num},
     dl_sheet='전년트렌드TOP20', dl_prefix='전년트렌드TOP20'
