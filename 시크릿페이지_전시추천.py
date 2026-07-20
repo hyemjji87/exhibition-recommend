@@ -383,6 +383,44 @@ def build_dashboard_html(sel_week, prev_week, kpis, sections):
 </html>"""
 
 
+def current_report_html():
+    """session_state 의 분석 결과로 대시보드 HTML 을 만든다."""
+    w = st.session_state.sel_week
+    pw = st.session_state.sel_prev_mall_week
+    prev_code = mall_week_to_code(pw) if pw else '-'
+    n1, n2, n3, n4 = (len(st.session_state[f'df{i}']) for i in range(1, 5))
+
+    fmt_cols = {'거래액': fmt_amt, '고객수': fmt_num, '객단가': fmt_amt}
+
+    def formatted(df):
+        if df is None or df.empty:
+            return df
+        out = df.copy()
+        for col, fn in fmt_cols.items():
+            if col in out.columns:
+                out[col] = out[col].apply(fn)
+        return out
+
+    return build_dashboard_html(
+        sel_week=w,
+        prev_week=prev_code,
+        kpis=[
+            ("전년 트렌드 TOP", n1, f"몰전체 · {prev_code}", "#1E3A5F"),
+            ("제휴 볼륨 TOP",   n2, f"제휴 · {w}",           "#1E3A5F"),
+            ("신장률 TOP",      n3, "전년 동주차 대비",       "#1E3A5F"),
+            ("최종 선정",       n4, "가중치 종합",            "#D63E8A"),
+        ],
+        sections=[
+            ("1", "전년 트렌드 TOP 20", f"몰전체 {prev_code}", formatted(st.session_state.df1)),
+            ("2", "제휴 볼륨 TOP 20",   f"제휴 {w}",           formatted(st.session_state.df2)),
+            ("3", "신장률 TOP 20",      "전년 동주차 대비",     formatted(st.session_state.df3)),
+            ("4", "최종 선정 30개",     "가중치 종합 점수",     formatted(st.session_state.df4)),
+            ("5", "브랜드별 상품코드 TOP 10", "선택 브랜드 기준",
+             formatted(st.session_state.df_prod)),
+        ],
+    )
+
+
 def df_to_excel_bytes(df, sheet_name='Sheet1'):
     from openpyxl import load_workbook
     from openpyxl.styles import PatternFill, Font, Alignment
@@ -729,6 +767,7 @@ defaults = {
     'week_map_25': {}, 'week_map_26': {},
     'analysis_done': False,
     'df_prod': pd.DataFrame(),
+    'last_checks': '',
     'df1': pd.DataFrame(), 'df2': pd.DataFrame(),
     'df3': pd.DataFrame(), 'df4': pd.DataFrame(),
     'sel_week': '', 'sel_prev_mall_week': '',
@@ -863,6 +902,21 @@ with st.sidebar:
             st.warning(f"합계 {tw:.2f} (합계 1.0 권장)")
 
     st.markdown("---")
+    st.markdown("### 📤 대시보드 내보내기")
+    if st.session_state.analysis_done:
+        st.download_button(
+            "🌐 대시보드 HTML 다운로드",
+            data=current_report_html().encode('utf-8'),
+            file_name=f"시크릿_대시보드_{st.session_state.sel_week}_"
+                      f"{datetime.now().strftime('%y%m%d')}.html",
+            mime='text/html', use_container_width=True,
+            help="표와 요약이 그대로 담긴 단일 HTML 파일입니다. "
+                 "인터넷 없이 열리고 그대로 공유·인쇄할 수 있습니다.",
+        )
+    else:
+        st.caption("분석 실행 후 활성화됩니다.")
+
+    st.markdown("---")
     st.markdown("### 💾 Raw 데이터 내보내기")
     has_data = any(st.session_state[k] is not None for k in ['df_mall','df_aff_25','df_aff_26'])
     if has_data:
@@ -932,7 +986,15 @@ if run_btn:
         checks.append(f"분석2 브랜드: {len(df2)}개 (제휴 볼륨 {sel_week})")
         checks.append(f"분석3 브랜드: {len(df3)}개 (신장률 전년비교)")
         checks.append(f"최종 선정: {len(df4)}개")
-        st.success("분석 완료 ✓\n" + " · ".join(checks))
+        st.session_state.last_checks = " · ".join(checks)
+
+        # 사이드바는 이 지점보다 먼저 그려지므로, 방금 끝난 분석 결과가
+        # 사이드바(HTML 내보내기 버튼)에 반영되지 않는다. 한 번 다시 돌려
+        # 사이드바가 완료 상태를 보게 한다.
+        st.rerun()
+
+if st.session_state.analysis_done and st.session_state.last_checks:
+    st.success("분석 완료 ✓\n" + st.session_state.last_checks)
 
 # ── KPI 요약 ──
 if st.session_state.analysis_done:
@@ -964,44 +1026,6 @@ if st.session_state.analysis_done:
     </div>
     """, unsafe_allow_html=True)
 
-    # ── 대시보드 전체 HTML 내려받기 ──
-    prev_code = mall_week_to_code(pw) if pw else '-'
-    fmt_amt_cols = {'거래액': fmt_amt, '고객수': fmt_num, '객단가': fmt_amt}
-
-    def formatted(df):
-        if df is None or df.empty:
-            return df
-        out = df.copy()
-        for col, fn in fmt_amt_cols.items():
-            if col in out.columns:
-                out[col] = out[col].apply(fn)
-        return out
-
-    html_report = build_dashboard_html(
-        sel_week=w,
-        prev_week=prev_code,
-        kpis=[
-            ("전년 트렌드 TOP", n1, f"몰전체 · {prev_code}", "#1E3A5F"),
-            ("제휴 볼륨 TOP",   n2, f"제휴 · {w}",           "#1E3A5F"),
-            ("신장률 TOP",      n3, "전년 동주차 대비",       "#1E3A5F"),
-            ("최종 선정",       n4, "가중치 종합",            "#D63E8A"),
-        ],
-        sections=[
-            ("1", "전년 트렌드 TOP 20", f"몰전체 {prev_code}", formatted(st.session_state.df1)),
-            ("2", "제휴 볼륨 TOP 20",   f"제휴 {w}",           formatted(st.session_state.df2)),
-            ("3", "신장률 TOP 20",      "전년 동주차 대비",     formatted(st.session_state.df3)),
-            ("4", "최종 선정 30개",     "가중치 종합 점수",     formatted(st.session_state.df4)),
-            ("5", "브랜드별 상품코드 TOP 10", "선택 브랜드 기준",
-             formatted(st.session_state.df_prod)),
-        ],
-    )
-    st.download_button(
-        "🌐 대시보드 HTML 다운로드",
-        data=html_report.encode('utf-8'),
-        file_name=f"시크릿_대시보드_{w}_{datetime.now().strftime('%y%m%d')}.html",
-        mime='text/html',
-        help="표와 요약이 그대로 담긴 단일 HTML 파일입니다. 인터넷 없이 열리고 그대로 공유·인쇄할 수 있습니다.",
-    )
 
 # ─────────────────────────────────────────────
 # 탭
