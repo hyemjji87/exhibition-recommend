@@ -1,0 +1,10 @@
+# 배포=로컬 동일 환경 고정 (Python 3.14). 언핀 자동업데이트로 인한 환경 전용 버그 방지.
+# 이 버전 조합은 로컬(Python 3.14.5)에서 전 기능 정상 검증됨.
+streamlit==1.58.0
+pandas==3.0.3
+numpy==2.5.0
+pyarrow==24.0.0
+plotly==6.8.0
+openpyxl==3.1.5
+requests==2.34.2
+python-calamine==0.7.0
