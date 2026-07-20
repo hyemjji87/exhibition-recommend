@@ -159,6 +159,7 @@ div[data-baseweb="popover"] [role="option"]:hover {
 .w-chip.trend   { background:#FFF0F6; color:#D63E8A; }
 .w-chip.vol     { background:#F0FFF4; color:#2D7D46; }
 .w-chip.growth  { background:#FFF8E1; color:#B45309; }
+.w-chip.wow     { background:#EEF2FF; color:#4338CA; }
 
 .info-box { background:#EEF4FF; border-radius:8px; padding:.8rem 1rem; color:#2255A4; font-size:.78rem; margin:.5rem 0; }
 .warn-box { background:#FFF8E1; border-radius:8px; padding:.8rem 1rem; color:#7B5A00; font-size:.78rem; margin:.5rem 0; }
@@ -265,6 +266,29 @@ def get_next_week_code(code, available_codes=None):
     elif w < 5:
         return nxt
     return f"{y}_{m + 1}_1" if m < 12 else f"{y + 1}_1_1"
+
+def get_prev_adjacent_week_code(code, available_codes=None):
+    """
+    '25_8_1' → '25_7_4' (바로 앞 주차)
+
+    get_next_week_code 의 반대 방향. 1주차에서 앞 달로 넘어갈 때
+    그 달이 4주까지인지 5주까지인지 데이터로 확인한다.
+    """
+    try:
+        y, m, w = (int(x) for x in code.split("_"))
+    except Exception:
+        return None
+
+    if w > 1:
+        return f"{y}_{m}_{w - 1}"
+
+    py, pm = (y - 1, 12) if m == 1 else (y, m - 1)
+    if available_codes:
+        for cand in range(5, 0, -1):
+            c = f"{py}_{pm}_{cand}"
+            if c in available_codes:
+                return c
+    return f"{py}_{pm}_4"
 
 def build_week_map(df_pivot):
     """피벗 E열↔G열: {날짜str: 주차코드}"""
@@ -411,8 +435,11 @@ def current_report_html():
     pw = st.session_state.sel_prev_mall_week
     prev_code = mall_week_to_code(pw) if pw else '-'
     n1, n2, n3, n4 = (len(st.session_state[f'df{i}']) for i in range(1, 5))
+    n_wow = len(st.session_state.df_wow)
+    base_prev = st.session_state.base_prev_mall
 
-    fmt_cols = {'거래액': fmt_amt, '고객수': fmt_num, '객단가': fmt_amt}
+    fmt_cols = {'거래액': fmt_amt, '고객수': fmt_num, '객단가': fmt_amt,
+                '전주비(%)': fmt_pct, '전년비(%)': fmt_pct}
 
     def formatted(df):
         if df is None or df.empty:
@@ -427,17 +454,21 @@ def current_report_html():
         sel_week=w,
         prev_week=prev_code,
         kpis=[
-            ("전년 트렌드 TOP", n1, f"몰전체 · {prev_code}", "#1E3A5F"),
-            ("제휴 볼륨 TOP",   n2, f"제휴 · {w}",           "#1E3A5F"),
-            ("신장률 TOP",      n3, "전년 동주차 대비",       "#1E3A5F"),
-            ("최종 선정",       n4, "가중치 종합",            "#D63E8A"),
+            ("전년 트렌드 TOP",  n1,    f"몰전체 · {prev_code}", "#1E3A5F"),
+            ("전주비 신장 TOP",  n_wow, "몰전체 · 전주 대비",     "#1E3A5F"),
+            ("제휴 볼륨 TOP",    n2,    f"제휴 · {w}",           "#1E3A5F"),
+            ("전년비 신장 TOP",  n3,    "전년 동주차 대비",       "#1E3A5F"),
+            ("최종 선정",        n4,    "가중치 종합",            "#D63E8A"),
         ],
         sections=[
             ("1", "전년 트렌드 TOP 20", f"몰전체 {prev_code}", formatted(st.session_state.df1)),
-            ("2", "제휴 볼륨 TOP 20",   f"제휴 {w}",           formatted(st.session_state.df2)),
-            ("3", "신장률 TOP 20",      "전년 동주차 대비",     formatted(st.session_state.df3)),
-            ("4", "최종 선정 30개",     "가중치 종합 점수",     formatted(st.session_state.df4)),
-            ("5", "브랜드별 상품코드 TOP 10", "선택 브랜드 기준",
+            ("2", "전년 전주비 신장 TOP 30",
+             f"몰전체 {mall_week_to_code(base_prev) if base_prev else '-'} → {prev_code}",
+             formatted(st.session_state.df_wow)),
+            ("3", "제휴 볼륨 TOP 20",   f"제휴 {w}",           formatted(st.session_state.df2)),
+            ("4", "전년비 신장 TOP 20", "전년 동주차 대비",     formatted(st.session_state.df3)),
+            ("5", "최종 선정 30개",     "가중치 종합 점수",     formatted(st.session_state.df4)),
+            ("6", "브랜드별 상품코드 TOP 10", "선택 브랜드 기준",
              formatted(st.session_state.df_prod)),
         ],
     )
@@ -632,6 +663,63 @@ def analyze_mall_top20(df_mall, target_mall_week):
     return grp
 
 
+def analyze_mall_wow_growth(df_mall, base_mall_week, next_mall_week,
+                            base_top_n=100, top_n=30):
+    """
+    [분석2] 전년 전주비 신장 TOP 30
+
+    전년 분석주차(base)의 몰전체 거래액 TOP{base_top_n} 브랜드를 모수로 잡고,
+    그 다음 주차(next)의 거래액 신장률이 높은 순으로 {top_n}개를 뽑는다.
+    모수를 상위 브랜드로 한정하는 이유는, 거래액이 미미한 브랜드가
+    작은 절대 증가만으로 신장률 상위를 차지하는 것을 막기 위해서다.
+
+    표시하는 고객수·거래액은 다음 주차 기준이다(게시 대상 주차).
+    자사/입점·정상/이월은 몰전체 CSV에 없어 '-' 로 채운다(분석1과 동일).
+    """
+    if df_mall is None or df_mall.empty or not base_mall_week or not next_mall_week:
+        return pd.DataFrame()
+
+    keys = ['대카테고리명', 'ADMIN브랜드명']
+
+    def agg_week(week):
+        d = df_mall[df_mall['결제_주차'] == week]
+        if d.empty:
+            return pd.DataFrame(columns=keys + ['고객수', '거래액'])
+        return d.groupby(keys, as_index=False).agg(
+            고객수=('주문고객수', 'sum'),
+            거래액=('거래액', 'sum'),
+        )
+
+    base = agg_week(base_mall_week)
+    if base.empty:
+        return pd.DataFrame()
+
+    base = base.sort_values('거래액', ascending=False).head(base_top_n)
+    nxt = agg_week(next_mall_week)
+
+    merged = base.merge(nxt, on=keys, how='left', suffixes=('_기준', ''))
+    merged['고객수'] = merged['고객수'].fillna(0)
+    merged['거래액'] = merged['거래액'].fillna(0)
+
+    # 기준 주차 거래액이 0이면 신장률을 정의할 수 없으므로 제외한다.
+    merged = merged[merged['거래액_기준'] > 0].copy()
+    if merged.empty:
+        return pd.DataFrame()
+
+    merged['전주비(%)'] = (
+        (merged['거래액'] - merged['거래액_기준']) / merged['거래액_기준'] * 100
+    )
+
+    merged = merged.sort_values('전주비(%)', ascending=False).head(top_n).reset_index(drop=True)
+    merged.insert(0, '순위', range(1, len(merged) + 1))
+    merged['자사/입점'] = '-'
+    merged['정상/이월'] = '-'
+    merged = merged[['순위'] + keys + ['자사/입점', '정상/이월', '고객수', '거래액', '전주비(%)']]
+    merged.columns = ['순위', '카테고리', '브랜드', '자사/입점', '정상/이월',
+                      '고객수', '거래액', '전주비(%)']
+    return merged
+
+
 def analyze_affiliate_top20_vol(df_raw, week_map, target_week_code):
     """
     [분석2] 제휴 실적 분석주차 판매 TOP 20 (당월인증 Y/N 모두 포함)
@@ -705,12 +793,14 @@ def analyze_affiliate_top20_growth(df_curr, df_prev, week_map_curr, week_map_pre
     return merged
 
 
-def score_and_select(df1, df2, df3, top_n=30, w1=0.35, w2=0.35, w3=0.30):
+def score_and_select(df1, df_wow, df2, df3, top_n=30,
+                     w1=0.30, w_wow=0.20, w2=0.30, w3=0.20):
     """
-    [분석4] 가중치 종합점수 브랜드 선정
+    [분석5] 가중치 종합점수 브랜드 선정
     각 분석의 순위 역수 기반 점수화 후 가중 합산
     """
     scores = {}
+    keys = ['트렌드점수', '전주비점수', '볼륨점수', '신장률점수']
 
     def add(df, weight, score_key):
         if df is None or df.empty:
@@ -721,27 +811,25 @@ def score_and_select(df1, df2, df3, top_n=30, w1=0.35, w2=0.35, w3=0.30):
             cat   = row.get('카테고리', '')
             score = (n - i) / n * weight * 100
             if brand not in scores:
-                scores[brand] = {
-                    '브랜드': brand, '카테고리': cat,
-                    '트렌드점수': 0.0, '볼륨점수': 0.0, '신장률점수': 0.0
-                }
+                scores[brand] = dict({'브랜드': brand, '카테고리': cat},
+                                     **{k: 0.0 for k in keys})
             scores[brand][score_key] += score
 
-    add(df1, w1, '트렌드점수')
-    add(df2, w2, '볼륨점수')
-    add(df3, w3, '신장률점수')
+    add(df1,     w1,    '트렌드점수')
+    add(df_wow,  w_wow, '전주비점수')
+    add(df2,     w2,    '볼륨점수')
+    add(df3,     w3,    '신장률점수')
 
     if not scores:
         return pd.DataFrame()
 
     result = pd.DataFrame(scores.values())
-    result['종합점수'] = (result['트렌드점수'] + result['볼륨점수'] + result['신장률점수']).round(1)
-    result['트렌드점수'] = result['트렌드점수'].round(1)
-    result['볼륨점수']   = result['볼륨점수'].round(1)
-    result['신장률점수'] = result['신장률점수'].round(1)
+    result['종합점수'] = result[keys].sum(axis=1).round(1)
+    for k in keys:
+        result[k] = result[k].round(1)
     result = result.sort_values('종합점수', ascending=False).head(top_n).reset_index(drop=True)
     result.insert(0, '순위', range(1, len(result)+1))
-    return result[['순위','카테고리','브랜드','종합점수','트렌드점수','볼륨점수','신장률점수']]
+    return result[['순위', '카테고리', '브랜드', '종합점수'] + keys]
 
 
 def get_top_products(df_raw, week_map, target_week_code, selected_brands, top_n=10):
@@ -789,6 +877,8 @@ defaults = {
     'week_map_25': {}, 'week_map_26': {},
     'analysis_done': False,
     'df_prod': pd.DataFrame(),
+    'df_wow': pd.DataFrame(),
+    'base_prev_mall': '',
     'last_checks': '',
     'df1': pd.DataFrame(), 'df2': pd.DataFrame(),
     'df3': pd.DataFrame(), 'df4': pd.DataFrame(),
@@ -923,10 +1013,11 @@ with st.sidebar:
 
     st.markdown("---")
     with st.expander("⚙️ 가중치 설정"):
-        w1 = st.slider("전년 트렌드", 0.0, 1.0, 0.35, 0.05)
-        w2 = st.slider("제휴 볼륨",   0.0, 1.0, 0.35, 0.05)
-        w3 = st.slider("신장률",       0.0, 1.0, 0.30, 0.05)
-        tw = w1 + w2 + w3
+        w1    = st.slider("전년 트렌드",  0.0, 1.0, 0.30, 0.05)
+        w_wow = st.slider("전주비 신장",  0.0, 1.0, 0.20, 0.05)
+        w2    = st.slider("제휴 볼륨",    0.0, 1.0, 0.30, 0.05)
+        w3    = st.slider("전년비 신장",  0.0, 1.0, 0.20, 0.05)
+        tw = w1 + w_wow + w2 + w3
         if abs(tw - 1.0) > 0.02:
             st.warning(f"합계 {tw:.2f} (합계 1.0 권장)")
 
@@ -991,6 +1082,15 @@ if run_btn:
     else:
         with st.spinner("분석 중..."):
             df1 = analyze_mall_top20(st.session_state.df_mall, sel_prev_mall)
+
+            # 전주비 신장: 선택된 전년 비교 주차(=게시 대상 주차) 직전 주차를 기준으로 삼는다.
+            base_prev_mall = code_to_mall_week(
+                get_prev_adjacent_week_code(mall_week_to_code(sel_prev_mall), mall_codes or None)
+            )
+            df_wow = analyze_mall_wow_growth(
+                st.session_state.df_mall, base_prev_mall, sel_prev_mall
+            )
+
             df2 = analyze_affiliate_top20_vol(
                 st.session_state.df_aff_26, st.session_state.week_map_26, sel_week
             )
@@ -999,12 +1099,15 @@ if run_btn:
                 st.session_state.week_map_26, st.session_state.week_map_25,
                 sel_week
             )
-            df4 = score_and_select(df1, df2, df3, top_n=30, w1=w1, w2=w2, w3=w3)
+            df4 = score_and_select(df1, df_wow, df2, df3, top_n=30,
+                                   w1=w1, w_wow=w_wow, w2=w2, w3=w3)
 
         st.session_state.df1 = df1
+        st.session_state.df_wow = df_wow
         st.session_state.df2 = df2
         st.session_state.df3 = df3
         st.session_state.df4 = df4
+        st.session_state.base_prev_mall = base_prev_mall
         st.session_state.sel_week = sel_week
         st.session_state.sel_prev_mall_week = sel_prev_mall
         st.session_state.analysis_done = True
@@ -1012,8 +1115,9 @@ if run_btn:
         # 검증 로그
         checks = []
         checks.append(f"분석1 브랜드: {len(df1)}개 (전년 몰전체 {sel_prev_mall})")
-        checks.append(f"분석2 브랜드: {len(df2)}개 (제휴 볼륨 {sel_week})")
-        checks.append(f"분석3 브랜드: {len(df3)}개 (신장률 전년비교)")
+        checks.append(f"분석2 브랜드: {len(df_wow)}개 (전주비 {base_prev_mall}→{sel_prev_mall})")
+        checks.append(f"분석3 브랜드: {len(df2)}개 (제휴 볼륨 {sel_week})")
+        checks.append(f"분석4 브랜드: {len(df3)}개 (전년비 신장)")
         checks.append(f"최종 선정: {len(df4)}개")
         st.session_state.last_checks = " · ".join(checks)
 
@@ -1030,6 +1134,7 @@ if st.session_state.analysis_done:
     w = st.session_state.sel_week
     pw = st.session_state.sel_prev_mall_week
     n1,n2,n3,n4 = (len(st.session_state[f'df{i}']) for i in range(1,5))
+    n_wow = len(st.session_state.df_wow)
     st.markdown(f"""
     <div class="kpi-row">
       <div class="kpi-card">
@@ -1038,12 +1143,17 @@ if st.session_state.analysis_done:
         <div class="kpi-sub">몰전체 · {mall_week_to_code(pw)}</div>
       </div>
       <div class="kpi-card">
+        <div class="kpi-label">전주비 신장 TOP</div>
+        <div class="kpi-value">{n_wow}</div>
+        <div class="kpi-sub">몰전체 · 전주 대비</div>
+      </div>
+      <div class="kpi-card">
         <div class="kpi-label">제휴 볼륨 TOP</div>
         <div class="kpi-value">{n2}</div>
         <div class="kpi-sub">제휴 · {w}</div>
       </div>
       <div class="kpi-card">
-        <div class="kpi-label">신장률 TOP</div>
+        <div class="kpi-label">전년비 신장 TOP</div>
         <div class="kpi-value">{n3}</div>
         <div class="kpi-sub">전년 동주차 대비</div>
       </div>
@@ -1059,12 +1169,13 @@ if st.session_state.analysis_done:
 # ─────────────────────────────────────────────
 # 탭
 # ─────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab_wow, tab2, tab3, tab4, tab5 = st.tabs([
     "📊 ① 전년 트렌드 TOP 20",
-    "💰 ② 제휴 볼륨 TOP 20",
-    "📈 ③ 신장률 TOP 20",
-    "🏷️ ④ 최종 선정 30개",
-    "🛍️ ⑤ 상품코드 출력",
+    "🚀 ② 전년 전주비 신장 TOP 30",
+    "💰 ③ 제휴 볼륨 TOP 20",
+    "📈 ④ 전년비 신장 TOP 20",
+    "🏷️ ⑤ 최종 선정 30개",
+    "🛍️ ⑥ 상품코드 출력",
 ])
 
 def render_table_tab(tab, num, title, desc, chip_cls, chip_txt, df_key,
@@ -1106,39 +1217,47 @@ def render_table_tab(tab, num, title, desc, chip_cls, chip_txt, df_key,
 render_table_tab(
     tab1, "1", "전년 몰전체 다음 주차 판매 TOP 20",
     "기준: 2025년 몰전체 CSV · 분석 주차의 다음 주차 · 거래액 내림차순",
-    "trend", "트렌드 35%", "df1",
+    "trend", "트렌드 30%", "df1",
     fmt_cols={'거래액': fmt_amt, '고객수': fmt_num},
     dl_sheet='전년트렌드TOP20', dl_prefix='전년트렌드TOP20'
 )
 
 render_table_tab(
-    tab2, "2", "제휴 실적 분석주차 판매 TOP 20",
+    tab_wow, "2", "전년 전주비 신장 TOP 30",
+    "기준: 전년 분석주차 몰전체 거래액 TOP100 → 다음 주차 신장률 내림차순",
+    "wow", "전주비 20%", "df_wow",
+    fmt_cols={'거래액': fmt_amt, '고객수': fmt_num, '전주비(%)': fmt_pct},
+    dl_sheet='전주비신장TOP30', dl_prefix='전주비신장TOP30'
+)
+
+render_table_tab(
+    tab2, "3", "제휴 실적 분석주차 판매 TOP 20",
     "기준: 당월인증 Y/N 포함 · 판매건 · VAT 제외 · 거래액 내림차순",
-    "vol", "볼륨 35%", "df2",
+    "vol", "볼륨 30%", "df2",
     fmt_cols={'거래액': fmt_amt, '객단가': fmt_amt, '고객수': fmt_num},
     dl_sheet='제휴볼륨TOP20', dl_prefix='제휴볼륨TOP20'
 )
 
 render_table_tab(
-    tab3, "3", "전년 동주차 대비 신장률 TOP 20",
+    tab3, "4", "전년 동주차 대비 신장률 TOP 20",
     "기준: 최소 거래액 30만↑ · 전년 실적 있는 브랜드만",
-    "growth", "신장률 30%", "df3",
+    "growth", "전년비 20%", "df3",
     fmt_cols={'거래액': fmt_amt, '고객수': fmt_num, '전년비(%)': fmt_pct},
     dl_sheet='신장률TOP20', dl_prefix='신장률TOP20'
 )
 
 render_table_tab(
-    tab4, "4", "최종 게시 브랜드 선정 (30개)",
+    tab4, "5", "최종 게시 브랜드 선정 (30개)",
     "가중치 종합점수 기준 · 사이드바 ⚙️에서 가중치 조정 가능",
     "trend", "종합", "df4",
     dl_sheet='최종선정30', dl_prefix='시크릿_선정브랜드30'
 )
 
-# ── 탭5: 상품코드 ──
+# ── 탭6: 상품코드 ──
 with tab5:
     st.markdown("""
     <div class="sec-hdr">
-      <span class="sec-num">5</span>
+      <span class="sec-num">6</span>
       <span class="sec-title">브랜드별 상품코드 TOP 10 출력</span>
       <span class="sec-desc">최종 선정 브랜드 중 상품코드 추출 대상을 선택하세요</span>
     </div>
