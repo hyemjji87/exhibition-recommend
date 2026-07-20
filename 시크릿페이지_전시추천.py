@@ -42,6 +42,51 @@ section[data-testid="stSidebar"] .stCaption { color: #B0C8E0 !important; }
 section[data-testid="stSidebar"] small { color: #B0C8E0 !important; }
 section[data-testid="stSidebar"] .badge-ok   { background: #1a5c30; color: #7FFFA0 !important; border-radius:4px; padding:2px 8px; font-size:.72rem; font-weight:700; }
 section[data-testid="stSidebar"] .badge-wait { background: #5c4a00; color: #FFE066 !important; border-radius:4px; padding:2px 8px; font-size:.72rem; font-weight:700; }
+
+/* 입력 위젯: 위의 * 규칙이 글자만 흰색으로 만들어 배경과 겹치는 것을 방지.
+   배경·글자색을 함께 명시해 대비를 확보한다. */
+section[data-testid="stSidebar"] input,
+section[data-testid="stSidebar"] textarea,
+section[data-testid="stSidebar"] [data-baseweb="input"],
+section[data-testid="stSidebar"] [data-baseweb="select"] > div {
+    background: #FFFFFF !important;
+    color: #16243A !important;
+    border: 1px solid #4A6488 !important;
+    border-radius: 6px !important;
+}
+section[data-testid="stSidebar"] input::placeholder,
+section[data-testid="stSidebar"] textarea::placeholder {
+    color: #7A8AA0 !important;
+    opacity: 1;
+}
+section[data-testid="stSidebar"] [data-baseweb="select"] svg { fill: #16243A !important; }
+
+/* 파일 업로더 드롭존 */
+section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] {
+    background: #24374F !important;
+    border: 1px dashed #6E88AB !important;
+}
+section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] * {
+    color: #E8F0FA !important;
+}
+section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] button {
+    background: #FFFFFF !important;
+    color: #16243A !important;
+    border: none !important;
+    font-weight: 600;
+}
+/* 업로드된 파일명 */
+section[data-testid="stSidebar"] [data-testid="stFileUploaderFile"] * {
+    color: #E8F0FA !important;
+}
+
+/* 기간 설정 안내(분석 ↔ 전년) 대비 강화 */
+section[data-testid="stSidebar"] code {
+    background: #24374F !important;
+    color: #FFD79A !important;
+    padding: 1px 6px;
+    border-radius: 4px;
+}
 .main .block-container { background: #F5F6F8; padding-top: 1.5rem; }
 
 .header-banner {
