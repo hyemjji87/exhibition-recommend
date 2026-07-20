@@ -295,6 +295,49 @@ def dfs_to_json_bytes(data_dict):
 # ─────────────────────────────────────────────
 # 로딩 함수 (캐시)
 # ─────────────────────────────────────────────
+def needs_parse(widget_key, uploaded):
+    """
+    같은 파일을 재실행마다 다시 파싱하지 않도록 잠근다.
+
+    Streamlit은 위젯을 건드릴 때마다 스크립트를 처음부터 다시 돌린다.
+    그대로 두면 재실행마다 원본을 재파싱하면서, 새로 만든 DataFrame과
+    session_state 의 기존 DataFrame 이 동시에 메모리에 올라간다.
+    파일이 바뀌었을 때만 True 를 돌려준다.
+    """
+    sig = (uploaded.name, uploaded.size)
+    slot = f'_sig_{widget_key}'
+    if st.session_state.get(slot) == sig:
+        return False
+    st.session_state[slot] = sig
+    return True
+
+
+def shrink_dtypes(df):
+    """
+    메모리 절감용 dtype 축소.
+    - 정수/실수는 표현 가능한 최소 폭으로 downcast
+    - 반복이 많은 문자열 컬럼(브랜드/카테고리 등)은 category 로 변환
+    고유값이 절반을 넘는 컬럼은 category 가 오히려 손해라 건드리지 않는다.
+    """
+    for col in df.columns:
+        s = df[col]
+        if pd.api.types.is_integer_dtype(s):
+            df[col] = pd.to_numeric(s, downcast='integer')
+        elif pd.api.types.is_float_dtype(s):
+            df[col] = pd.to_numeric(s, downcast='float')
+        # pandas 3.x 는 문자열을 object 가 아니라 str dtype 으로 읽으므로 둘 다 본다.
+        elif pd.api.types.is_object_dtype(s) or pd.api.types.is_string_dtype(s):
+            # 날짜 컬럼은 뒤에서 pd.to_datetime 으로 파싱되므로 category 로 바꾸지 않는다.
+            if any(k in str(col) for k in ('일시', '일자', '날짜', 'date', 'Date')):
+                continue
+            if pd.api.types.infer_dtype(s, skipna=True) != 'string':
+                continue
+            n = len(s)
+            if n and s.nunique(dropna=False) / n < 0.5:
+                df[col] = s.astype('category')
+    return df
+
+
 def load_mall_csv(file_bytes):
     try:
         df = pd.read_csv(io.BytesIO(file_bytes), encoding='utf-16', sep='\t')
@@ -306,7 +349,7 @@ def load_mall_csv(file_bytes):
         # 주차코드 컬럼 추가 (피벗 없이 자체 변환)
         if '결제_주차' in df.columns:
             df['_week_code'] = df['결제_주차'].apply(mall_week_to_code)
-        return df, None
+        return shrink_dtypes(df), None
     except Exception as e:
         return None, str(e)
 
@@ -314,31 +357,32 @@ def load_affiliate_excel(file_bytes, sheet_hint='26'):
     """
     인증거래액 시트 + 피벗 시트 로드.
     sheet_hint: '26' → '인증거래액_26', '25' → '인증거래액_4-6월' 등 자동 탐색
+
+    메모리 주의: 이 앱은 2.7GB 안에서 돌아야 한다.
+    - 엔진은 calamine 고정. openpyxl은 셀마다 파이썬 객체를 만들어
+      같은 파일에 수 배의 메모리를 쓴다.
+    - BytesIO는 생성할 때마다 바이트를 복사하므로 하나만 만들어
+      seek(0)으로 재사용한다.
     """
     try:
         buf = io.BytesIO(file_bytes)
-        import openpyxl
-        wb = openpyxl.load_workbook(buf, read_only=True)
-        sheets = wb.sheetnames
-        wb.close()
 
-        # 인증거래액 시트 탐색
-        raw_sheet = None
-        for s in sheets:
-            if '인증거래액' in s:
-                raw_sheet = s
-                break
-        if raw_sheet is None:
-            return None, None, f"'인증거래액' 시트를 찾을 수 없습니다. 시트목록: {sheets}"
+        with pd.ExcelFile(buf, engine='calamine') as xls:
+            sheets = xls.sheet_names
 
-        buf = io.BytesIO(file_bytes)
-        df_raw = pd.read_excel(buf, sheet_name=raw_sheet)
+            raw_sheet = None
+            for s in sheets:
+                if '인증거래액' in s:
+                    raw_sheet = s
+                    break
+            if raw_sheet is None:
+                return None, None, f"'인증거래액' 시트를 찾을 수 없습니다. 시트목록: {sheets}"
 
-        # 피벗 시트
-        df_piv = None
-        if '피벗' in sheets:
-            buf = io.BytesIO(file_bytes)
-            df_piv = pd.read_excel(buf, sheet_name='피벗', header=None)
+            df_raw = shrink_dtypes(xls.parse(raw_sheet))
+
+            df_piv = None
+            if '피벗' in sheets:
+                df_piv = xls.parse('피벗', header=None)
 
         return df_raw, df_piv, None
     except Exception as e:
@@ -551,12 +595,17 @@ with st.sidebar:
     st.markdown("**① 2025년 몰 주차별 실적 (CSV)**")
     f_mall = st.file_uploader("mall", type=['csv'], label_visibility='collapsed', key='up_mall')
     if f_mall:
-        with st.spinner("로딩..."):
-            df, err = load_mall_csv(f_mall.read())
-        if err:
-            st.error(err)
-        else:
-            st.session_state.df_mall = df
+        if needs_parse('up_mall', f_mall):
+            with st.spinner("로딩..."):
+                df, err = load_mall_csv(f_mall.getvalue())
+            if err:
+                st.session_state.df_mall = None
+                st.error(err)
+            else:
+                st.session_state.df_mall = df
+            del df
+        if st.session_state.df_mall is not None:
+            df = st.session_state.df_mall
             st.markdown('<span class="badge-ok">✓ 로드 완료</span>', unsafe_allow_html=True)
             st.caption(f"{len(df):,}행 · 브랜드 {df['ADMIN브랜드명'].nunique():,}개")
     else:
@@ -568,17 +617,20 @@ with st.sidebar:
     st.markdown("**② 2025년 분기 제휴 실적 (xlsx)**")
     f25 = st.file_uploader("aff25", type=['xlsx'], label_visibility='collapsed', key='up_aff25')
     if f25:
-        with st.spinner("로딩..."):
-            dr, dp, err = load_affiliate_excel(f25.read(), '25')
-        if err:
-            st.error(err)
-        else:
-            st.session_state.df_aff_25 = dr
-            if dp is not None:
-                st.session_state.week_map_25 = build_week_map(dp)
-            del dp
+        if needs_parse('up_aff25', f25):
+            with st.spinner("로딩..."):
+                dr, dp, err = load_affiliate_excel(f25.getvalue(), '25')
+            if err:
+                st.session_state.df_aff_25 = None
+                st.error(err)
+            else:
+                st.session_state.df_aff_25 = dr
+                if dp is not None:
+                    st.session_state.week_map_25 = build_week_map(dp)
+            del dr, dp
+        if st.session_state.df_aff_25 is not None:
             st.markdown('<span class="badge-ok">✓ 로드 완료</span>', unsafe_allow_html=True)
-            st.caption(f"{len(dr):,}행")
+            st.caption(f"{len(st.session_state.df_aff_25):,}행")
     else:
         st.markdown('<span class="badge-wait">⏳ 대기 중</span>', unsafe_allow_html=True)
 
@@ -588,15 +640,19 @@ with st.sidebar:
     st.markdown("**③ 2026년 당월 제휴 실적 (xlsx)**")
     f26 = st.file_uploader("aff26", type=['xlsx'], label_visibility='collapsed', key='up_aff26')
     if f26:
-        with st.spinner("로딩..."):
-            dr, dp, err = load_affiliate_excel(f26.read(), '26')
-        if err:
-            st.error(err)
-        else:
-            st.session_state.df_aff_26 = dr
-            if dp is not None:
-                st.session_state.week_map_26 = build_week_map(dp)
-            del dp
+        if needs_parse('up_aff26', f26):
+            with st.spinner("로딩..."):
+                dr, dp, err = load_affiliate_excel(f26.getvalue(), '26')
+            if err:
+                st.session_state.df_aff_26 = None
+                st.error(err)
+            else:
+                st.session_state.df_aff_26 = dr
+                if dp is not None:
+                    st.session_state.week_map_26 = build_week_map(dp)
+            del dr, dp
+        if st.session_state.df_aff_26 is not None:
+            dr = st.session_state.df_aff_26
             st.markdown('<span class="badge-ok">✓ 로드 완료</span>', unsafe_allow_html=True)
             st.caption(f"{len(dr):,}행 · {dr['정산일시일'].min()} ~ {dr['정산일시일'].max()}")
     else:
