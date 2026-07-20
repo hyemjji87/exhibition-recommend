@@ -304,12 +304,22 @@ def needs_parse(widget_key, uploaded):
     session_state 의 기존 DataFrame 이 동시에 메모리에 올라간다.
     파일이 바뀌었을 때만 True 를 돌려준다.
     """
-    sig = (uploaded.name, uploaded.size)
-    slot = f'_sig_{widget_key}'
-    if st.session_state.get(slot) == sig:
-        return False
-    st.session_state[slot] = sig
-    return True
+    return st.session_state.get(f'_sig_{widget_key}') != (uploaded.name, uploaded.size)
+
+
+def mark_parsed(widget_key, uploaded):
+    """
+    파싱에 성공했을 때만 서명을 남긴다.
+
+    시도 시점에 기록하면, 로드가 실패하거나 도중에 앱이 재시작됐을 때
+    서명만 남아 다음 재실행에서 '이미 처리한 파일'로 건너뛰게 된다.
+    그러면 배지도 에러도 없이 파일이 멈춘 것처럼 보인다.
+    """
+    st.session_state[f'_sig_{widget_key}'] = (uploaded.name, uploaded.size)
+
+
+def clear_parsed(widget_key):
+    st.session_state.pop(f'_sig_{widget_key}', None)
 
 
 def shrink_dtypes(df):
@@ -620,9 +630,11 @@ with st.sidebar:
                 df, err = load_mall_csv(f_mall.getvalue())
             if err:
                 st.session_state.df_mall = None
+                clear_parsed('up_mall')
                 st.error(err)
             else:
                 st.session_state.df_mall = df
+                mark_parsed('up_mall', f_mall)
             del df
         if st.session_state.df_mall is not None:
             df = st.session_state.df_mall
@@ -642,11 +654,13 @@ with st.sidebar:
                 dr, dp, err = load_affiliate_excel(f25.getvalue(), '25')
             if err:
                 st.session_state.df_aff_25 = None
+                clear_parsed('up_aff25')
                 st.error(err)
             else:
                 st.session_state.df_aff_25 = dr
                 if dp is not None:
                     st.session_state.week_map_25 = build_week_map(dp)
+                mark_parsed('up_aff25', f25)
             del dr, dp
         if st.session_state.df_aff_25 is not None:
             st.markdown('<span class="badge-ok">✓ 로드 완료</span>', unsafe_allow_html=True)
@@ -665,11 +679,13 @@ with st.sidebar:
                 dr, dp, err = load_affiliate_excel(f26.getvalue(), '26')
             if err:
                 st.session_state.df_aff_26 = None
+                clear_parsed('up_aff26')
                 st.error(err)
             else:
                 st.session_state.df_aff_26 = dr
                 if dp is not None:
                     st.session_state.week_map_26 = build_week_map(dp)
+                mark_parsed('up_aff26', f26)
             del dr, dp
         if st.session_state.df_aff_26 is not None:
             dr = st.session_state.df_aff_26
