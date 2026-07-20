@@ -281,6 +281,108 @@ def tag_week(df, week_map):
     df['_week'] = df['_date'].map(week_map)
     return df
 
+def build_dashboard_html(sel_week, prev_week, kpis, sections):
+    """
+    화면 내용을 그대로 담은 단일 HTML 파일을 만든다.
+
+    첨부·공유를 전제로 하므로 외부 CSS/JS/폰트를 참조하지 않고
+    스타일을 전부 인라인으로 넣는다. 인터넷 없이도 열린다.
+    sections: [(번호, 제목, 설명, DataFrame), ...]
+    """
+    def esc(v):
+        return (str(v).replace('&', '&amp;').replace('<', '&lt;')
+                .replace('>', '&gt;').replace('"', '&quot;'))
+
+    def table_html(df):
+        if df is None or df.empty:
+            return '<p class="empty">해당 주차 데이터 없음.</p>'
+        head = ''.join(f'<th>{esc(c)}</th>' for c in df.columns)
+        rows = []
+        for row in df.itertuples(index=False):
+            cells = ''.join(f'<td>{esc(v)}</td>' for v in row)
+            rows.append(f'<tr>{cells}</tr>')
+        return (f'<table><thead><tr>{head}</tr></thead>'
+                f'<tbody>{"".join(rows)}</tbody></table>')
+
+    kpi_html = ''.join(
+        f'<div class="kpi"><div class="kpi-label">{esc(label)}</div>'
+        f'<div class="kpi-value" style="color:{color}">{esc(value)}</div>'
+        f'<div class="kpi-sub">{esc(sub)}</div></div>'
+        for label, value, sub, color in kpis
+    )
+
+    body = []
+    for num, title, desc, df in sections:
+        body.append(
+            f'<section><h2><span class="num">{esc(num)}</span>{esc(title)}'
+            f'<span class="desc">{esc(desc)}</span></h2>{table_html(df)}</section>'
+        )
+
+    generated = datetime.now().strftime('%Y-%m-%d %H:%M')
+    return f"""<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LF몰 시크릿 페이지 큐레이션 {esc(sel_week)}</title>
+<style>
+  * {{ box-sizing: border-box; }}
+  body {{ margin:0; padding:24px; background:#F5F6F8; color:#16243A;
+         font-family:'Pretendard','Apple SD Gothic Neo','Noto Sans KR',sans-serif; }}
+  .wrap {{ max-width:1200px; margin:0 auto; }}
+  .banner {{ background:linear-gradient(135deg,#1E3A5F 0%,#0F1B2D 70%);
+             border-radius:12px; padding:1.2rem 1.5rem; display:flex;
+             justify-content:space-between; align-items:center; gap:1rem; flex-wrap:wrap; }}
+  .banner h1 {{ color:#FFF; font-size:1.3rem; margin:0; font-weight:700; }}
+  .banner .sub {{ color:#7BA3CC; font-size:.82rem; margin-top:.3rem; }}
+  .badge {{ background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.15);
+            border-radius:20px; padding:.3rem .9rem; color:#A8D4FF; font-size:.78rem; }}
+  .meta {{ color:#6B7A8D; font-size:.76rem; margin:.9rem 0 1.2rem; }}
+  .kpi-row {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr));
+              gap:12px; margin-bottom:1.5rem; }}
+  .kpi {{ background:#FFF; border-radius:10px; padding:1rem 1.2rem;
+          border-left:4px solid #1E3A5F; }}
+  .kpi-label {{ color:#6B7A8D; font-size:.7rem; font-weight:600;
+                letter-spacing:.06em; text-transform:uppercase; }}
+  .kpi-value {{ color:#1E3A5F; font-size:1.6rem; font-weight:700; margin-top:.2rem; }}
+  .kpi-sub {{ color:#9BA8B5; font-size:.7rem; margin-top:.25rem; }}
+  section {{ background:#FFF; border-radius:10px; padding:1rem 1.2rem; margin-bottom:1.2rem; }}
+  h2 {{ font-size:.9rem; color:#1E3A5F; display:flex; align-items:center;
+        gap:.5rem; margin:0 0 .8rem; }}
+  .num {{ background:#1E3A5F; color:#FFF; border-radius:6px;
+          padding:2px 8px; font-size:.78rem; }}
+  .desc {{ color:#8A96A3; font-size:.72rem; font-weight:400; margin-left:auto; }}
+  .tbl {{ overflow-x:auto; }}
+  table {{ border-collapse:collapse; width:100%; font-size:.8rem; }}
+  th {{ background:#F0F2F5; color:#1E3A5F; text-align:left;
+        padding:8px 10px; border-bottom:2px solid #DDE2E8; white-space:nowrap; }}
+  td {{ padding:7px 10px; border-bottom:1px solid #EEF0F3; white-space:nowrap; }}
+  tbody tr:nth-child(even) {{ background:#FAFBFC; }}
+  .empty {{ color:#8A6914; background:#FFF8E1; border-radius:8px;
+            padding:.8rem 1rem; font-size:.8rem; }}
+  footer {{ color:#9BA8B5; font-size:.72rem; text-align:center; margin-top:1.5rem; }}
+  @media print {{ body {{ background:#FFF; padding:0; }} section {{ break-inside:avoid; }} }}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="banner">
+    <div>
+      <h1>🏷️ LF몰 시크릿 페이지 큐레이션 대시보드</h1>
+      <div class="sub">전년 트렌드 × 제휴 실적 × 신장률 → 게시 브랜드 &amp; 상품 선정</div>
+    </div>
+    <div class="badge">내부 전용 · CONFIDENTIAL</div>
+  </div>
+  <div class="meta">분석 주차 <b>{esc(sel_week)}</b> ↔ 전년 비교 <b>{esc(prev_week)}</b>
+    · 생성 {esc(generated)}</div>
+  <div class="kpi-row">{kpi_html}</div>
+  {''.join(body)}
+  <footer>LF몰 시크릿 페이지 큐레이션 대시보드 · 내부 전용</footer>
+</div>
+</body>
+</html>"""
+
+
 def df_to_excel_bytes(df, sheet_name='Sheet1'):
     from openpyxl import load_workbook
     from openpyxl.styles import PatternFill, Font, Alignment
@@ -626,6 +728,7 @@ defaults = {
     'df_mall': None, 'df_aff_25': None, 'df_aff_26': None,
     'week_map_25': {}, 'week_map_26': {},
     'analysis_done': False,
+    'df_prod': pd.DataFrame(),
     'df1': pd.DataFrame(), 'df2': pd.DataFrame(),
     'df3': pd.DataFrame(), 'df4': pd.DataFrame(),
     'sel_week': '', 'sel_prev_mall_week': '',
@@ -861,6 +964,45 @@ if st.session_state.analysis_done:
     </div>
     """, unsafe_allow_html=True)
 
+    # ── 대시보드 전체 HTML 내려받기 ──
+    prev_code = mall_week_to_code(pw) if pw else '-'
+    fmt_amt_cols = {'거래액': fmt_amt, '고객수': fmt_num, '객단가': fmt_amt}
+
+    def formatted(df):
+        if df is None or df.empty:
+            return df
+        out = df.copy()
+        for col, fn in fmt_amt_cols.items():
+            if col in out.columns:
+                out[col] = out[col].apply(fn)
+        return out
+
+    html_report = build_dashboard_html(
+        sel_week=w,
+        prev_week=prev_code,
+        kpis=[
+            ("전년 트렌드 TOP", n1, f"몰전체 · {prev_code}", "#1E3A5F"),
+            ("제휴 볼륨 TOP",   n2, f"제휴 · {w}",           "#1E3A5F"),
+            ("신장률 TOP",      n3, "전년 동주차 대비",       "#1E3A5F"),
+            ("최종 선정",       n4, "가중치 종합",            "#D63E8A"),
+        ],
+        sections=[
+            ("1", "전년 트렌드 TOP 20", f"몰전체 {prev_code}", formatted(st.session_state.df1)),
+            ("2", "제휴 볼륨 TOP 20",   f"제휴 {w}",           formatted(st.session_state.df2)),
+            ("3", "신장률 TOP 20",      "전년 동주차 대비",     formatted(st.session_state.df3)),
+            ("4", "최종 선정 30개",     "가중치 종합 점수",     formatted(st.session_state.df4)),
+            ("5", "브랜드별 상품코드 TOP 10", "선택 브랜드 기준",
+             formatted(st.session_state.df_prod)),
+        ],
+    )
+    st.download_button(
+        "🌐 대시보드 HTML 다운로드",
+        data=html_report.encode('utf-8'),
+        file_name=f"시크릿_대시보드_{w}_{datetime.now().strftime('%y%m%d')}.html",
+        mime='text/html',
+        help="표와 요약이 그대로 담긴 단일 HTML 파일입니다. 인터넷 없이 열리고 그대로 공유·인쇄할 수 있습니다.",
+    )
+
 # ─────────────────────────────────────────────
 # 탭
 # ─────────────────────────────────────────────
@@ -968,6 +1110,7 @@ with tab5:
                     selected, top_n=10
                 )
 
+            st.session_state.df_prod = df_prod  # HTML 내보내기에서 재사용
             if not df_prod.empty:
                 df_show = df_prod.copy()
                 df_show['거래액'] = df_show['거래액'].apply(fmt_amt)
