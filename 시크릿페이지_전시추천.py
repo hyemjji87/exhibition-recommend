@@ -38,8 +38,9 @@ section[data-testid="stSidebar"] label {
 section[data-testid="stSidebar"] .stMarkdown { color: #FFFFFF !important; }
 section[data-testid="stSidebar"] h2,
 section[data-testid="stSidebar"] h3 { color: #FFFFFF !important; font-weight: 700; }
-section[data-testid="stSidebar"] .stCaption { color: #B0C8E0 !important; }
-section[data-testid="stSidebar"] small { color: #B0C8E0 !important; }
+section[data-testid="stSidebar"] .stCaption { color: #DCE8F5 !important; }
+section[data-testid="stSidebar"] .stCaption * { color: #DCE8F5 !important; }
+section[data-testid="stSidebar"] small { color: #DCE8F5 !important; }
 section[data-testid="stSidebar"] .badge-ok   { background: #1a5c30; color: #7FFFA0 !important; border-radius:4px; padding:2px 8px; font-size:.72rem; font-weight:700; }
 section[data-testid="stSidebar"] .badge-wait { background: #5c4a00; color: #FFE066 !important; border-radius:4px; padding:2px 8px; font-size:.72rem; font-weight:700; }
 
@@ -80,12 +81,33 @@ section[data-testid="stSidebar"] [data-testid="stFileUploaderFile"] * {
     color: #E8F0FA !important;
 }
 
-/* 기간 설정 안내(분석 ↔ 전년) 대비 강화 */
-section[data-testid="stSidebar"] code {
-    background: #24374F !important;
-    color: #FFD79A !important;
+/* 기간 설정 안내(분석 ↔ 전년)의 주차코드 칩 */
+section[data-testid="stSidebar"] code,
+section[data-testid="stSidebar"] .stCaption code {
+    background: #33506F !important;
+    color: #FFDCA8 !important;
     padding: 1px 6px;
     border-radius: 4px;
+    font-weight: 700;
+}
+
+/* 셀렉트박스에 표시되는 선택값 */
+section[data-testid="stSidebar"] [data-baseweb="select"] div[value],
+section[data-testid="stSidebar"] [data-baseweb="select"] span {
+    color: #16243A !important;
+}
+
+/* 드롭다운 목록은 사이드바 밖(문서 최상단)에 그려지므로 따로 지정한다.
+   사이드바 스코프 규칙이 닿지 않아 흰 배경에 흰 글씨가 되기 쉽다. */
+div[data-baseweb="popover"] li,
+div[data-baseweb="popover"] [role="option"] {
+    background: #FFFFFF !important;
+    color: #16243A !important;
+}
+div[data-baseweb="popover"] li:hover,
+div[data-baseweb="popover"] [role="option"]:hover {
+    background: #E8EFF8 !important;
+    color: #16243A !important;
 }
 .main .block-container { background: #F5F6F8; padding-top: 1.5rem; }
 
