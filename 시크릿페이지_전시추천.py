@@ -332,6 +332,26 @@ def shrink_dtypes(df):
                 continue
             if pd.api.types.infer_dtype(s, skipna=True) != 'string':
                 continue
+            # 숫자가 문자열로 들어온 컬럼 처리 (엑셀 export 에서 흔함).
+            # 문자열로 두면 sum() 이 덧셈이 아니라 문자열 이어붙이기가 되어
+            # 값이 조용히 틀린다("10"+"20" -> "1020"). 그래서 숫자로 바꾼다.
+            # 단 상품코드처럼 앞자리 0 이 의미를 갖는 값은 문자열로 남긴다.
+            nonnull = s.dropna().astype(str)
+            if len(nonnull):
+                stripped = nonnull.str.replace(',', '', regex=False).str.strip()
+                converted = pd.to_numeric(stripped, errors='coerce')
+                if converted.notna().mean() >= 0.95:
+                    has_leading_zero = (
+                        stripped.str.len().gt(1) & stripped.str.startswith('0')
+                    ).any()
+                    if not has_leading_zero:
+                        num = pd.to_numeric(
+                            s.astype(str).str.replace(',', '', regex=False).str.strip(),
+                            errors='coerce',
+                        )
+                        kind = 'integer' if (num.dropna() % 1 == 0).all() else 'float'
+                        df[col] = pd.to_numeric(num, downcast=kind)
+                    continue
             n = len(s)
             if n and s.nunique(dropna=False) / n < 0.5:
                 df[col] = s.astype('category')
