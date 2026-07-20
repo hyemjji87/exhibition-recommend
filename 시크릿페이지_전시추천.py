@@ -250,7 +250,6 @@ def dfs_to_json_bytes(data_dict):
 # ─────────────────────────────────────────────
 # 로딩 함수 (캐시)
 # ─────────────────────────────────────────────
-@st.cache_data(show_spinner=False)
 def load_mall_csv(file_bytes):
     try:
         df = pd.read_csv(io.BytesIO(file_bytes), encoding='utf-16', sep='\t')
@@ -266,7 +265,6 @@ def load_mall_csv(file_bytes):
     except Exception as e:
         return None, str(e)
 
-@st.cache_data(show_spinner=False)
 def load_affiliate_excel(file_bytes, sheet_hint='26'):
     """
     인증거래액 시트 + 피벗 시트 로드.
@@ -485,7 +483,6 @@ def get_top_products(df_raw, week_map, target_week_code, selected_brands, top_n=
 # ─────────────────────────────────────────────
 defaults = {
     'df_mall': None, 'df_aff_25': None, 'df_aff_26': None,
-    'df_piv_25': None, 'df_piv_26': None,
     'week_map_25': {}, 'week_map_26': {},
     'analysis_done': False,
     'df1': pd.DataFrame(), 'df2': pd.DataFrame(),
@@ -533,8 +530,8 @@ with st.sidebar:
         else:
             st.session_state.df_aff_25 = dr
             if dp is not None:
-                st.session_state.df_piv_25 = dp
                 st.session_state.week_map_25 = build_week_map(dp)
+            del dp
             st.markdown('<span class="badge-ok">✓ 로드 완료</span>', unsafe_allow_html=True)
             st.caption(f"{len(dr):,}행")
     else:
@@ -553,8 +550,8 @@ with st.sidebar:
         else:
             st.session_state.df_aff_26 = dr
             if dp is not None:
-                st.session_state.df_piv_26 = dp
                 st.session_state.week_map_26 = build_week_map(dp)
+            del dp
             st.markdown('<span class="badge-ok">✓ 로드 완료</span>', unsafe_allow_html=True)
             st.caption(f"{len(dr):,}행 · {dr['정산일시일'].min()} ~ {dr['정산일시일'].max()}")
     else:
