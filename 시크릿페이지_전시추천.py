@@ -214,6 +214,12 @@ def fmt_pct(v):
     sign = "+" if v > 0 else ""
     return f"{sign}{v:.1f}%"
 
+def fmt_int_signed(v):
+    v = _to_float(v)
+    if v is None: return "-"
+    sign = "+" if v > 0 else ""
+    return f"{sign}{int(v):,}"
+
 def mall_week_to_code(week_str):
     """'2025년 06월 3주차' → '25_6_3'"""
     try:
@@ -439,7 +445,9 @@ def current_report_html():
     base_prev = st.session_state.base_prev_mall
 
     fmt_cols = {'거래액': fmt_amt, '고객수': fmt_num, '객단가': fmt_amt,
-                '전주비(%)': fmt_pct, '전년비(%)': fmt_pct}
+                '전주비(%)': fmt_pct, '전년비(%)': fmt_pct,
+                '고객수증감': fmt_int_signed, '고객수증감률(%)': fmt_pct,
+                '거래액전년비(%)': fmt_pct, '고객수효과': fmt_amt, '객단가효과': fmt_amt}
 
     def formatted(df):
         if df is None or df.empty:
@@ -615,15 +623,20 @@ def load_affiliate_excel(file_bytes, sheet_hint='26'):
         with pd.ExcelFile(buf, engine='calamine') as xls:
             sheets = xls.sheet_names
 
-            raw_sheet = None
-            for s in sheets:
-                if '인증거래액' in s:
-                    raw_sheet = s
-                    break
-            if raw_sheet is None:
+            # 전년 파일은 분기별로 '인증거래액_1-3월/4-6월/7-9월/10-12월'처럼
+            # 나뉘어 있을 수 있어, 이름에 '인증거래액'이 든 시트를 '전부' 읽어 병합한다.
+            # (첫 시트만 읽으면 전년 동주차가 다른 분기라 신장률 TOP이 빈 표가 됨)
+            auth_sheets = [s for s in sheets if '인증거래액' in s]
+            if not auth_sheets:
                 return None, None, f"'인증거래액' 시트를 찾을 수 없습니다. 시트목록: {sheets}"
 
-            df_raw = shrink_dtypes(xls.parse(raw_sheet))
+            if len(auth_sheets) == 1:
+                df_raw = shrink_dtypes(xls.parse(auth_sheets[0]))
+            else:
+                df_raw = pd.concat(
+                    [shrink_dtypes(xls.parse(s)) for s in auth_sheets],
+                    ignore_index=True,
+                )
 
             df_piv = None
             if '피벗' in sheets:
@@ -745,12 +758,20 @@ def analyze_affiliate_top20_vol(df_raw, week_map, target_week_code):
     return grp
 
 
+# 신장률 TOP 튜닝 상수
+GROWTH_MIN_CUST = 5        # (A) 당년·전년 고객수 둘 다 이 값 이상만 (소표본 폭주 방지)
+GROWTH_MIN_AMT  = 300000   # 최소 당년 거래액(원, VAT제외)
+GROWTH_REQUIRE_AMT_UP = True  # (C) 거래액도 전년비 플러스인 브랜드만(머릿수만 늘고 매출 빠진 브랜드 제외)
+
 def analyze_affiliate_top20_growth(df_curr, df_prev, week_map_curr, week_map_prev,
                                     target_week_code):
     """
-    [분석3] 전년 동주차 대비 신장률 TOP 20
-    df_curr: 2026 raw / df_prev: 2025 raw
-    전년 동주차: 26_6_3 → 25_6_3
+    [분석3] 전년 동주차 대비 '고객수 신장' TOP 20
+    df_curr: 2026 raw / df_prev: 2025 raw · 전년 동주차: 26_6_3 → 25_6_3
+
+    브랜드/주차 단위 고객수가 작아 거래액 %는 객단가 한 건에 크게 흔들린다.
+    → (A) 최소 고객수 필터, (B) 고객수 증감을 주 랭킹(절대 증감분 우선, 율 병기),
+       (C) 거래액은 가드레일 + 요인분해(고객수효과/객단가효과)로 병기.
     """
     if df_curr is None or df_curr.empty:
         return pd.DataFrame()
@@ -767,29 +788,55 @@ def analyze_affiliate_top20_growth(df_curr, df_prev, week_map_curr, week_map_pre
         거래액_당=('amt', 'sum')
     )
 
-    # 전년 집계 (2025 raw 있을 때)
-    grp_p = pd.DataFrame(columns=['물리대카테', 'Admin브랜드명', '거래액_전'])
+    # 전년 집계 (2025 raw 있을 때) — 전년 고객수도 함께
+    grp_p = pd.DataFrame(columns=['물리대카테', 'Admin브랜드명', '고객수_전', '거래액_전'])
     if df_prev is not None and not df_prev.empty and week_map_prev and prev_week_code:
         df_p = tag_week(df_prev[df_prev['정산구분'] == '판매'], week_map_prev)
         df_p = df_p[df_p['_week'] == prev_week_code].copy()
         df_p['amt'] = get_vat_col(df_p)
         if not df_p.empty:
             grp_p = df_p.groupby(['물리대카테', 'Admin브랜드명'], as_index=False).agg(
+                고객수_전=('고객번호', 'nunique'),
                 거래액_전=('amt', 'sum')
             )
 
     merged = grp_c.merge(grp_p, on=['물리대카테', 'Admin브랜드명'], how='left')
-    merged['전년비(%)'] = np.where(
-        merged['거래액_전'].fillna(0) > 0,
-        (merged['거래액_당'] - merged['거래액_전']) / merged['거래액_전'] * 100,
-        np.nan
-    )
-    # 전년 실적 있는 브랜드만, 최소 거래액 30만
-    merged = merged[(merged['거래액_당'] >= 300000) & merged['전년비(%)'].notna()]
-    merged = merged.sort_values('전년비(%)', ascending=False).head(20).reset_index(drop=True)
-    merged.insert(0, '순위', range(1, len(merged)+1))
-    merged = merged[['순위','물리대카테','Admin브랜드명','고객수_당','거래액_당','전년비(%)']]
-    merged.columns = ['순위','카테고리','브랜드','고객수','거래액','전년비(%)']
+
+    # (A) 최소 표본: 당년·전년 고객수 둘 다 기준 이상 + 최소 거래액
+    merged = merged[
+        (merged['고객수_당'] >= GROWTH_MIN_CUST) &
+        (merged['고객수_전'].fillna(0) >= GROWTH_MIN_CUST) &
+        (merged['거래액_당'] >= GROWTH_MIN_AMT)
+    ].copy()
+    if merged.empty:
+        return pd.DataFrame()
+
+    # (B) 고객수 증감(주 지표) — 절대 + 율
+    merged['고객수증감'] = merged['고객수_당'] - merged['고객수_전']
+    merged['고객수증감률(%)'] = (merged['고객수증감'] / merged['고객수_전'] * 100)
+
+    # 거래액 전년비(가드레일 표시용)
+    merged['거래액전년비(%)'] = (merged['거래액_당'] - merged['거래액_전']) / merged['거래액_전'] * 100
+
+    # (C) 요인분해: Δ거래액 = 고객수효과 + 객단가효과 (객단가_전 기준, 교차항은 객단가효과에 포함)
+    aov_prev = merged['거래액_전'] / merged['고객수_전']
+    merged['고객수효과'] = merged['고객수증감'] * aov_prev
+    merged['객단가효과'] = (merged['거래액_당'] - merged['거래액_전']) - merged['고객수효과']
+
+    # (C) 가드레일: 거래액도 전년비 플러스인 브랜드만
+    if GROWTH_REQUIRE_AMT_UP:
+        merged = merged[merged['거래액전년비(%)'] >= 0]
+    if merged.empty:
+        return pd.DataFrame()
+
+    # (B) 랭킹: 절대 증감분 우선(규모 안정성), 동률은 증감률
+    merged = merged.sort_values(['고객수증감', '고객수증감률(%)'],
+                                ascending=[False, False]).head(20).reset_index(drop=True)
+    merged.insert(0, '순위', range(1, len(merged) + 1))
+    merged = merged[['순위', '물리대카테', 'Admin브랜드명', '고객수_당', '고객수증감',
+                     '고객수증감률(%)', '거래액_당', '거래액전년비(%)', '고객수효과', '객단가효과']]
+    merged.columns = ['순위', '카테고리', '브랜드', '고객수', '고객수증감',
+                      '고객수증감률(%)', '거래액', '거래액전년비(%)', '고객수효과', '객단가효과']
     return merged
 
 
@@ -1260,11 +1307,14 @@ render_table_tab(
 )
 
 render_table_tab(
-    tab3, "4", "전년 동주차 대비 신장률 TOP 20",
-    "기준: 최소 거래액 30만↑ · 전년 실적 있는 브랜드만",
+    tab3, "4", "전년 동주차 대비 고객수 신장 TOP 20",
+    "기준: 당년·전년 고객수 5명↑ · 거래액 30만↑ & 전년비 플러스 · 고객수 절대 증감분 순 "
+    "(고객수효과/객단가효과 = Δ거래액 요인분해)",
     "growth", "전년비 20%", "df3",
-    fmt_cols={'거래액': fmt_amt, '고객수': fmt_num, '전년비(%)': fmt_pct},
-    dl_sheet='신장률TOP20', dl_prefix='신장률TOP20'
+    fmt_cols={'고객수': fmt_num, '고객수증감': fmt_int_signed, '고객수증감률(%)': fmt_pct,
+              '거래액': fmt_amt, '거래액전년비(%)': fmt_pct,
+              '고객수효과': fmt_amt, '객단가효과': fmt_amt},
+    dl_sheet='고객수신장TOP20', dl_prefix='고객수신장TOP20'
 )
 
 render_table_tab(
