@@ -77,10 +77,44 @@ def parse_pivot(df_raw):
             code_map[str(row.iloc[8]).strip()] = str(row.iloc[9]).strip()
     return date_map, code_map
 
+def _match_sheet(names, *keywords, exclude=()):
+    for n in names:
+        s = str(n)
+        if all(k in s for k in keywords) and not any(e in s for e in exclude):
+            return n
+    return None
+
+def read_raw_workbook(raw_file):
+    """시트명이 파일마다 달라도(예: 몰전체_26 vs 전체_26) 키워드로 매칭해 필요한 시트만 읽는다.
+    - 읽기 엔진은 calamine(openpyxl 대비 4~5배 빠름), 실패 시 openpyxl로 폴백
+    - 인증회원 시트는 사용하지 않으므로 읽지 않음"""
+    try:
+        xls = pd.ExcelFile(raw_file, engine='calamine')
+    except Exception:
+        raw_file.seek(0)
+        xls = pd.ExcelFile(raw_file, engine='openpyxl')
+    names = xls.sheet_names
+
+    tx = _match_sheet(names, '인증거래액')
+    piv = _match_sheet(names, '피벗')
+    mall = _match_sheet(names, '몰전체') or _match_sheet(names, '전체', '_26', exclude=('인증', '제휴', '25'))
+
+    if tx is None:
+        raise ValueError(f"'인증거래액' 시트를 찾지 못했습니다. 시트 목록: {names}")
+    if piv is None:
+        raise ValueError(f"'피벗' 시트를 찾지 못했습니다. 시트 목록: {names}")
+
+    raw = {
+        '인증거래액_26': xls.parse(tx, header=0),
+        '피벗': xls.parse(piv, header=0),
+    }
+    if mall is not None:
+        raw['몰전체_26'] = xls.parse(mall, header=None)
+    return raw
+
 def build_json_from_raw(df_raw_all: dict) -> dict:
     df = df_raw_all['인증거래액_26'].copy()
-    df_cert = df_raw_all['인증회원_26'].copy()
-    df_mall = df_raw_all['몰전체_26'].copy()
+    df_mall = df_raw_all.get('몰전체_26')  # 없으면 몰비중 컬럼은 0으로 처리
     df_pivot_raw = df_raw_all['피벗']
 
     date_map, code_map = parse_pivot(df_pivot_raw)
@@ -121,28 +155,31 @@ def build_json_from_raw(df_raw_all: dict) -> dict:
     brd['nb_pct_total'] = (brd['nb_rev'] / nb_rev_total * 100).round(2) if nb_rev_total > 0 else 0
     brd['af_pct'] = (brd['rev_total'] / total_rev * 100).round(2)
 
-    # 몰전체 비중
-    df_mall_work = df_mall.copy()
-    hdr_idx = None
-    for i, row in df_mall_work.iterrows():
-        if any('브랜드' in str(v) for v in row.values if pd.notna(v)):
-            hdr_idx = i
-            break
-    if hdr_idx is not None:
-        df_mall_work.columns = df_mall_work.iloc[hdr_idx].tolist()
-        df_mall_work = df_mall_work.iloc[hdr_idx+1:].copy()
-    else:
-        df_mall_work.columns = df_mall_work.iloc[0].tolist()
-        df_mall_work = df_mall_work.iloc[1:].copy()
+    # 몰전체 비중 (몰전체/전체 시트가 있을 때만; 없으면 몰비중 컬럼은 0)
+    if df_mall is not None and not df_mall.empty:
+        df_mall_work = df_mall.copy()
+        hdr_idx = None
+        for i, row in df_mall_work.iterrows():
+            if any('브랜드' in str(v) for v in row.values if pd.notna(v)):
+                hdr_idx = i
+                break
+        if hdr_idx is not None:
+            df_mall_work.columns = df_mall_work.iloc[hdr_idx].tolist()
+            df_mall_work = df_mall_work.iloc[hdr_idx+1:].copy()
+        else:
+            df_mall_work.columns = df_mall_work.iloc[0].tolist()
+            df_mall_work = df_mall_work.iloc[1:].copy()
 
-    brd_col = next((c for c in df_mall_work.columns if '브랜드' in str(c)), None)
-    rev_col = next((c for c in df_mall_work.columns if '거래액' in str(c)), None)
-    if brd_col and rev_col:
-        df_mall_work[rev_col] = pd.to_numeric(df_mall_work[rev_col], errors='coerce').fillna(0)
-        mall_brd = df_mall_work.groupby(brd_col)[rev_col].sum().reset_index()
-        mall_brd.columns = ['Admin브랜드명', '거래액']
-        mall_total = mall_brd['거래액'].sum()
-        mall_brd['mall_pct'] = (mall_brd['거래액'] / mall_total * 100).round(2) if mall_total > 0 else 0
+        brd_col = next((c for c in df_mall_work.columns if '브랜드' in str(c)), None)
+        rev_col = next((c for c in df_mall_work.columns if '거래액' in str(c)), None)
+        if brd_col and rev_col:
+            df_mall_work[rev_col] = pd.to_numeric(df_mall_work[rev_col], errors='coerce').fillna(0)
+            mall_brd = df_mall_work.groupby(brd_col)[rev_col].sum().reset_index()
+            mall_brd.columns = ['Admin브랜드명', '거래액']
+            mall_total = mall_brd['거래액'].sum()
+            mall_brd['mall_pct'] = (mall_brd['거래액'] / mall_total * 100).round(2) if mall_total > 0 else 0
+        else:
+            mall_brd = pd.DataFrame(columns=['Admin브랜드명', 'mall_pct'])
     else:
         mall_brd = pd.DataFrame(columns=['Admin브랜드명', 'mall_pct'])
 
@@ -389,7 +426,7 @@ def main():
     with st.sidebar:
         st.markdown("### 📁 데이터 업로드")
         raw_file = st.file_uploader("raw Excel 업로드", type=['xlsx'],
-                                    help="시트: 인증거래액_26 / 인증회원_26 / 몰전체_26 / 피벗")
+                                    help="월간 제휴실적 raw를 그대로 올리면 됩니다. 인증거래액·전체(몰)·피벗 시트를 자동 인식합니다.")
         json_file = st.file_uploader("또는 기존 JSON 업로드", type=['json'])
         st.divider()
         st.markdown("### 🗓️ 분석 기간")
@@ -405,11 +442,7 @@ def main():
     if raw_file:
         with st.spinner("Raw 데이터 처리 중..."):
             try:
-                sheets = ['인증거래액_26','인증회원_26','몰전체_26','피벗']
-                raw_all = {}
-                for s in sheets:
-                    raw_all[s] = pd.read_excel(raw_file, sheet_name=s, engine='openpyxl',
-                                               header=0 if s != '몰전체_26' else None)
+                raw_all = read_raw_workbook(raw_file)
                 data = build_json_from_raw(raw_all)
                 st.sidebar.success(f"✅ 생성 완료 | {data['meta']['data_range']}")
                 json_bytes = json.dumps(data, ensure_ascii=False, indent=2).encode('utf-8')
