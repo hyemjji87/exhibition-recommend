@@ -503,16 +503,41 @@ def df_to_excel_bytes(df, sheet_name='Sheet1'):
     return buf.getvalue()
 
 def dfs_to_json_bytes(data_dict):
-    out = {}
-    for key, df in data_dict.items():
-        if df is not None:
+    """
+    업로드한 raw 전체를 하나의 JSON 으로 묶는다.
+
+    메모리 주의: to_dict(orient='records') 는 행마다 파이썬 dict 를 만들어
+    원본의 몇 배를 쓴다(20만행 x 31열이면 GB 단위). 대신 DataFrame 단위로
+    to_json(C 구현) 한 조각을 버퍼에 흘려 넣고 바깥 JSON 은 직접 쓴다.
+    indent 도 주지 않는다 - 들여쓰기만으로 출력이 배 가까이 커진다.
+    """
+    buf = io.BytesIO()
+    buf.write(b'{')
+    for i, (key, df) in enumerate(data_dict.items()):
+        if i:
+            buf.write(b',')
+        buf.write(json.dumps(key, ensure_ascii=False).encode('utf-8'))
+        buf.write(b':')
+        if df is None or df.empty:
+            buf.write(b'[]')
+            continue
+        # 날짜 컬럼이 있을 때만 사본을 뜬다. 없으면 원본을 그대로 넘겨
+        # 불필요한 전체 복사를 피한다.
+        dt_cols = list(df.select_dtypes(include=['datetime64']).columns)
+        if dt_cols:
             dc = df.copy()
-            for col in dc.select_dtypes(include=['datetime64']).columns:
+            for col in dt_cols:
                 dc[col] = dc[col].astype(str)
-            out[key] = dc.to_dict(orient='records')
         else:
-            out[key] = []
-    return json.dumps(out, ensure_ascii=False, indent=2).encode('utf-8')
+            dc = df
+        # double_precision 기본값(10)은 소수를 반올림해 값이 미세하게 바뀐다.
+        # 거래액을 그대로 내보내야 하므로 최대치로 올린다.
+        buf.write(dc.to_json(orient='records', force_ascii=False,
+                             double_precision=15).encode('utf-8'))
+        if dt_cols:
+            del dc
+    buf.write(b'}')
+    return buf.getvalue()
 
 
 # ─────────────────────────────────────────────
@@ -1095,16 +1120,31 @@ with st.sidebar:
     st.markdown("### 💾 Raw 데이터 내보내기")
     has_data = any(st.session_state[k] is not None for k in ['df_mall','df_aff_25','df_aff_26'])
     if has_data:
-        json_bytes = dfs_to_json_bytes({
-            'mall_2025': st.session_state.df_mall,
-            'affiliate_2025': st.session_state.df_aff_25,
-            'affiliate_2026': st.session_state.df_aff_26,
-        })
-        st.download_button(
-            "📥 JSON으로 다운로드", json_bytes,
-            file_name=f"lf_secret_raw_{datetime.now().strftime('%y%m%d')}.json",
-            mime='application/json', use_container_width=True
+        # st.download_button 은 데이터를 미리 받아야 하는 위젯이라, 그대로 두면
+        # 버튼을 누르지 않아도 재실행마다 raw 전체가 직렬화된다.
+        # Streamlit 은 위젯을 건드릴 때마다(가중치 슬라이더 한 칸 포함) 스크립트를
+        # 처음부터 다시 돌리므로, 업로드한 3개 파일이면 그때마다 GB 단위가 새로
+        # 올라가 앱이 메모리 한도에 걸려 죽는다. 그래서 체크했을 때만 만든다.
+        want_json = st.checkbox(
+            "JSON 내보내기 준비", value=False, key='want_json',
+            help="체크해야 raw 전체를 JSON 으로 묶습니다. 용량이 커서 "
+                 "메모리를 많이 쓰니, 받은 뒤에는 체크를 해제하세요.",
         )
+        if want_json:
+            with st.spinner("JSON 생성 중..."):
+                json_bytes = dfs_to_json_bytes({
+                    'mall_2025': st.session_state.df_mall,
+                    'affiliate_2025': st.session_state.df_aff_25,
+                    'affiliate_2026': st.session_state.df_aff_26,
+                })
+            st.download_button(
+                "📥 JSON으로 다운로드", json_bytes,
+                file_name=f"lf_secret_raw_{datetime.now().strftime('%y%m%d')}.json",
+                mime='application/json', use_container_width=True
+            )
+            st.caption("받으신 뒤 체크를 해제해주세요. 켜 둔 채로 두면 "
+                       "다른 설정을 바꿀 때마다 다시 만듭니다.")
+            del json_bytes
     else:
         st.caption("파일 업로드 후 활성화됩니다.")
 
@@ -1345,15 +1385,21 @@ with tab5:
         )
 
         if selected:
-            with st.spinner("상품 데이터 추출 중..."):
-                df_prod = get_top_products(
-                    st.session_state.df_aff_26,
-                    st.session_state.week_map_26,
-                    st.session_state.sel_week,
-                    selected, top_n=10
-                )
+            # 선택이 그대로면 재실행마다 raw 를 다시 집계할 이유가 없다.
+            # (가중치 슬라이더만 움직여도 이 블록까지 다시 돈다)
+            prod_key = (st.session_state.get('_sig_up_aff26'),
+                        st.session_state.sel_week, tuple(selected))
+            if st.session_state.get('_prod_key') != prod_key:
+                with st.spinner("상품 데이터 추출 중..."):
+                    st.session_state.df_prod = get_top_products(
+                        st.session_state.df_aff_26,
+                        st.session_state.week_map_26,
+                        st.session_state.sel_week,
+                        selected, top_n=10
+                    )
+                st.session_state['_prod_key'] = prod_key
 
-            st.session_state.df_prod = df_prod  # HTML 내보내기에서 재사용
+            df_prod = st.session_state.df_prod  # HTML 내보내기에서 재사용
             if not df_prod.empty:
                 df_show = df_prod.copy()
                 df_show['거래액'] = df_show['거래액'].apply(fmt_amt)
