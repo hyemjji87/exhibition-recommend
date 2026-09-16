@@ -788,6 +788,27 @@ GROWTH_MIN_CUST = 5        # (A) 당년·전년 고객수 둘 다 이 값 이상
 GROWTH_MIN_AMT  = 300000   # 최소 당년 거래액(원, VAT제외)
 GROWTH_REQUIRE_AMT_UP = True  # (C) 거래액도 전년비 플러스인 브랜드만(머릿수만 늘고 매출 빠진 브랜드 제외)
 
+def _dates_of(df_tagged):
+    """주차로 잘라낸 프레임에서 **실제 데이터가 있는 날짜**(오름차순 문자열)."""
+    if df_tagged is None or df_tagged.empty or '_date' not in df_tagged.columns:
+        return []
+    return sorted(pd.Series(df_tagged['_date']).dropna().unique().tolist())
+
+
+def _period_note(cur_dates, prev_dates):
+    """비교 기간 한 줄 요약. 부분주면 경고를 붙인다."""
+    if not cur_dates:
+        return '당년 주차에 데이터가 없습니다.'
+    cur_txt = f"당년 {cur_dates[0]}~{cur_dates[-1]} ({len(cur_dates)}일)"
+    if not prev_dates:
+        return f"{cur_txt} ↔ 전년 대조 데이터 없음"
+    note = (f"비교 기간: {cur_txt} ↔ 전년 {prev_dates[0]}~{prev_dates[-1]} "
+            f"({len(prev_dates)}일) · 동일 요일 매칭")
+    if len(cur_dates) < 7:
+        note += f" · ⚠️ 부분주({len(cur_dates)}일)라 전년도 같은 요일 {len(prev_dates)}일만 대조합니다"
+    return note
+
+
 def analyze_affiliate_top20_growth(df_curr, df_prev, week_map_curr, week_map_prev,
                                     target_week_code):
     """
@@ -797,9 +818,20 @@ def analyze_affiliate_top20_growth(df_curr, df_prev, week_map_curr, week_map_pre
     브랜드/주차 단위 고객수가 작아 거래액 %는 객단가 한 건에 크게 흔들린다.
     → (A) 최소 고객수 필터, (B) 고객수 증감을 주 랭킹(절대 증감분 우선, 율 병기),
        (C) 거래액은 가드레일 + 요인분해(고객수효과/객단가효과)로 병기.
+
+    ⚠️ 기간 길이 맞춤: 당년 주차가 **부분주**(마감일 컷·진행 중)면 전년 주차에서도
+    **같은 요일만** 뽑는다. 이걸 안 하면 당년 2일치가 전년 7일치와 붙어 거의 모든
+    브랜드가 역신장으로 떨어지고, 아래 (C) 가드레일까지 걸려 표가 통째로 빈다
+    (실제로 26_9_3에서 477조합 → 8행만 남았고, 그 8행도 소규모 브랜드뿐이었다).
+    hyemjji-lf-affiliate-analysis 의 tab_monthly.retail_prev_dates와 같은 규칙이라
+    두 대시보드가 같은 주차에서 같은 기간을 가리킨다.
+
+    비교 기간 요약은 반환 DataFrame의 `.attrs['period_note']`에 담는다.
     """
     if df_curr is None or df_curr.empty:
-        return pd.DataFrame()
+        out = pd.DataFrame()
+        out.attrs['period_note'] = ''
+        return out
 
     prev_week_code = get_prev_week_code(target_week_code)
 
@@ -808,6 +840,11 @@ def analyze_affiliate_top20_growth(df_curr, df_prev, week_map_curr, week_map_pre
     df_c = df_c[df_c['_week'] == target_week_code].copy()
     df_c['amt'] = get_vat_col(df_c)
 
+    # 당년 주차에 실제 데이터가 있는 날짜 — 피벗 주차맵은 미래 날짜까지 들고 있어
+    # 주차코드만으로는 부분주를 알 수 없다. 반드시 원장에 찍힌 날짜로 잡는다.
+    cur_dates = _dates_of(df_c)
+    cur_weekdays = {pd.Timestamp(d).weekday() for d in cur_dates}
+
     grp_c = df_c.groupby(['물리대카테', 'Admin브랜드명'], as_index=False).agg(
         고객수_당=('고객번호', 'nunique'),
         거래액_당=('amt', 'sum')
@@ -815,15 +852,23 @@ def analyze_affiliate_top20_growth(df_curr, df_prev, week_map_curr, week_map_pre
 
     # 전년 집계 (2025 raw 있을 때) — 전년 고객수도 함께
     grp_p = pd.DataFrame(columns=['물리대카테', 'Admin브랜드명', '고객수_전', '거래액_전'])
+    prev_dates = []
     if df_prev is not None and not df_prev.empty and week_map_prev and prev_week_code:
         df_p = tag_week(df_prev[df_prev['정산구분'] == '판매'], week_map_prev)
         df_p = df_p[df_p['_week'] == prev_week_code].copy()
+        # ── 기간 길이 맞춤: 당년에 있는 요일만 전년에서 뽑는다 ──
+        if cur_weekdays and not df_p.empty:
+            _wd = pd.to_datetime(df_p['_date']).dt.weekday
+            df_p = df_p[_wd.isin(cur_weekdays)].copy()
+        prev_dates = _dates_of(df_p)
         df_p['amt'] = get_vat_col(df_p)
         if not df_p.empty:
             grp_p = df_p.groupby(['물리대카테', 'Admin브랜드명'], as_index=False).agg(
                 고객수_전=('고객번호', 'nunique'),
                 거래액_전=('amt', 'sum')
             )
+
+    note = _period_note(cur_dates, prev_dates)
 
     merged = grp_c.merge(grp_p, on=['물리대카테', 'Admin브랜드명'], how='left')
 
@@ -834,7 +879,9 @@ def analyze_affiliate_top20_growth(df_curr, df_prev, week_map_curr, week_map_pre
         (merged['거래액_당'] >= GROWTH_MIN_AMT)
     ].copy()
     if merged.empty:
-        return pd.DataFrame()
+        out = pd.DataFrame()
+        out.attrs['period_note'] = note
+        return out
 
     # (B) 고객수 증감(주 지표) — 절대 + 율
     merged['고객수증감'] = merged['고객수_당'] - merged['고객수_전']
@@ -852,7 +899,9 @@ def analyze_affiliate_top20_growth(df_curr, df_prev, week_map_curr, week_map_pre
     if GROWTH_REQUIRE_AMT_UP:
         merged = merged[merged['거래액전년비(%)'] >= 0]
     if merged.empty:
-        return pd.DataFrame()
+        out = pd.DataFrame()
+        out.attrs['period_note'] = note
+        return out
 
     # (B) 랭킹: 절대 증감분 우선(규모 안정성), 동률은 증감률
     merged = merged.sort_values(['고객수증감', '고객수증감률(%)'],
@@ -862,6 +911,7 @@ def analyze_affiliate_top20_growth(df_curr, df_prev, week_map_curr, week_map_pre
                      '고객수증감률(%)', '거래액_당', '거래액전년비(%)', '고객수효과', '객단가효과']]
     merged.columns = ['순위', '카테고리', '브랜드', '고객수', '고객수증감',
                       '고객수증감률(%)', '거래액', '거래액전년비(%)', '고객수효과', '객단가효과']
+    merged.attrs['period_note'] = note
     return merged
 
 
@@ -954,6 +1004,7 @@ defaults = {
     'last_checks': '',
     'df1': pd.DataFrame(), 'df2': pd.DataFrame(),
     'df3': pd.DataFrame(), 'df4': pd.DataFrame(),
+    'df3_note': '',
     'sel_week': '', 'sel_prev_mall_week': '',
 }
 for k, v in defaults.items():
@@ -1208,6 +1259,7 @@ if run_btn:
         st.session_state.df_wow = df_wow
         st.session_state.df2 = df2
         st.session_state.df3 = df3
+        st.session_state.df3_note = df3.attrs.get('period_note', '')
         st.session_state.df4 = df4
         st.session_state.base_prev_mall = base_prev_mall
         st.session_state.sel_week = sel_week
@@ -1287,7 +1339,7 @@ tab1, tab_wow, tab2, tab3, tab4, tab5 = st.tabs([
 ])
 
 def render_table_tab(tab, num, title, desc, chip_cls, chip_txt, df_key,
-                     fmt_cols=None, dl_sheet='Sheet1', dl_prefix=''):
+                     fmt_cols=None, dl_sheet='Sheet1', dl_prefix='', note_key=None):
     with tab:
         st.markdown(f"""
         <div class="sec-hdr">
@@ -1299,6 +1351,9 @@ def render_table_tab(tab, num, title, desc, chip_cls, chip_txt, df_key,
         </div>
         <div class="tbl-wrap">
         """, unsafe_allow_html=True)
+
+        if note_key and st.session_state.get(note_key):
+            st.caption(st.session_state[note_key])
 
         df = st.session_state[df_key]
         if st.session_state.analysis_done and not df.empty:
@@ -1349,12 +1404,13 @@ render_table_tab(
 render_table_tab(
     tab3, "4", "전년 동주차 대비 고객수 신장 TOP 20",
     "기준: 당년·전년 고객수 5명↑ · 거래액 30만↑ & 전년비 플러스 · 고객수 절대 증감분 순 "
-    "(고객수효과/객단가효과 = Δ거래액 요인분해)",
+    "(고객수효과/객단가효과 = Δ거래액 요인분해) · 당년이 부분주면 전년도 동일 요일만 대조",
     "growth", "전년비 20%", "df3",
     fmt_cols={'고객수': fmt_num, '고객수증감': fmt_int_signed, '고객수증감률(%)': fmt_pct,
               '거래액': fmt_amt, '거래액전년비(%)': fmt_pct,
               '고객수효과': fmt_amt, '객단가효과': fmt_amt},
-    dl_sheet='고객수신장TOP20', dl_prefix='고객수신장TOP20'
+    dl_sheet='고객수신장TOP20', dl_prefix='고객수신장TOP20',
+    note_key='df3_note'
 )
 
 render_table_tab(
