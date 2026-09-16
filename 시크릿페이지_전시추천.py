@@ -761,7 +761,10 @@ def analyze_mall_wow_growth(df_mall, base_mall_week, next_mall_week,
 def analyze_affiliate_top20_vol(df_raw, week_map, target_week_code):
     """
     [분석2] 제휴 실적 분석주차 판매 TOP 20 (당월인증 Y/N 모두 포함)
-    출력: 카테고리/브랜드/정상이월/고객수/거래액/객단가
+    출력: 카테고리/브랜드/정상이월입점/고객수/거래액/객단가
+
+    `정상이월구분`은 정상·이월·입점 세 값을 갖는 한 컬럼이다. 헤더를 '정상/이월'로
+    두면 입점 브랜드가 올라올 때 '입점'이 엉뚱한 칸에 찍힌 것처럼 보인다.
     """
     if df_raw is None or df_raw.empty or not week_map:
         return pd.DataFrame()
@@ -779,7 +782,7 @@ def analyze_affiliate_top20_vol(df_raw, week_map, target_week_code):
     grp['객단가'] = (grp['거래액'] / grp['고객수']).round(0)
     grp = grp.sort_values('거래액', ascending=False).head(20).reset_index(drop=True)
     grp.insert(0, '순위', range(1, len(grp)+1))
-    grp.columns = ['순위','카테고리','브랜드','정상/이월','고객수','거래액','객단가']
+    grp.columns = ['순위','카테고리','브랜드','정상/이월/입점','고객수','거래액','객단가']
     return grp
 
 
@@ -957,7 +960,18 @@ def score_and_select(df1, df_wow, df2, df3, top_n=30,
 def get_top_products(df_raw, week_map, target_week_code, selected_brands, top_n=10):
     """
     [분석5] 선택 브랜드의 상품코드 TOP 10 (고객수 기준)
-    출력: 브랜드/자사입점/정상이월/상품코드/상품명/MD명/고객수/거래액
+    출력: 브랜드/정상이월입점/상품코드/상품명/MD명/고객수/거래액
+
+    ⚠️ '자사/입점' 컬럼을 만들지 않는다. 제휴 raw에는 그런 컬럼이 없고, 예전엔
+    제휴처구분1(02-빅제휴/03-일반제휴)로 폴백해 채널 구분을 자사/입점으로 잘못 표시했다.
+    게다가 그 값으로 group by 해서 같은 상품코드가 빅제휴/일반제휴 두 줄로 쪼개졌다
+    (바버 26_9_3: 상품 59개가 68행으로 부풀고 9개가 중복 → TOP 10 자리를 중복이 먹음).
+    구분값은 `정상이월구분` 한 컬럼에 정상/이월/입점 셋으로 들어 있으므로 그대로 쓴다.
+
+    정렬은 고객수 → 거래액 순. 주차 단위 상품 고객수는 1~2명에서 동점이 무더기라
+    (26_9_3 닥스 여성: 1명짜리 69개 중 8개만 진입) 고객수만으로 자르면 남는 상품이
+    원본 행 순서대로 임의로 정해져 재실행 때마다 목록이 흔들린다. 같은 고객수면
+    거래액이 큰 상품을 올린다.
     """
     if df_raw is None or not selected_brands:
         return pd.DataFrame()
@@ -969,10 +983,7 @@ def get_top_products(df_raw, week_map, target_week_code, selected_brands, top_n=
 
     df['amt'] = get_vat_col(df)
 
-    # 자사/입점 컬럼 처리 (제휴처구분1로 대체)
-    입점col = '자사/입점' if '자사/입점' in df.columns else '제휴처구분1'
-
-    grp_cols = ['Admin브랜드명', 입점col, '정상이월구분', '상품코드', '상품명', 'MD명']
+    grp_cols = ['Admin브랜드명', '정상이월구분', '상품코드', '상품명', 'MD명']
     grp = df.groupby(grp_cols, as_index=False).agg(
         고객수=('고객번호', 'nunique'),
         거래액=('amt', 'sum')
@@ -980,15 +991,16 @@ def get_top_products(df_raw, week_map, target_week_code, selected_brands, top_n=
 
     parts = []
     for brand in selected_brands:
-        b = grp[grp['Admin브랜드명'] == brand].nlargest(top_n, '고객수')
+        b = grp[grp['Admin브랜드명'] == brand].nlargest(top_n, ['고객수', '거래액'])
         parts.append(b)
 
     if not parts:
         return pd.DataFrame()
 
     final = pd.concat(parts, ignore_index=True)
-    final = final.rename(columns={'Admin브랜드명': '브랜드', 입점col: '자사/입점', '정상이월구분': '정상/이월'})
-    return final[['브랜드','자사/입점','정상/이월','상품코드','상품명','MD명','고객수','거래액']]
+    final = final.rename(columns={'Admin브랜드명': '브랜드',
+                                  '정상이월구분': '정상/이월/입점'})
+    return final[['브랜드','정상/이월/입점','상품코드','상품명','MD명','고객수','거래액']]
 
 
 # ─────────────────────────────────────────────
@@ -1395,7 +1407,8 @@ render_table_tab(
 
 render_table_tab(
     tab2, "3", "제휴 실적 분석주차 판매 TOP 20",
-    "기준: 당월인증 Y/N 포함 · 판매건 · VAT 제외 · 거래액 내림차순",
+    "기준: 당월인증 Y/N 포함 · 판매건 · VAT 제외 · 거래액 내림차순 "
+    "(정상/이월/입점 = 원장 정상이월구분 그대로)",
     "vol", "볼륨 30%", "df2",
     fmt_cols={'거래액': fmt_amt, '객단가': fmt_amt, '고객수': fmt_num},
     dl_sheet='제휴볼륨TOP20', dl_prefix='제휴볼륨TOP20'
@@ -1470,7 +1483,8 @@ with tab5:
                         mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
                     )
                 with col_info:
-                    st.caption(f"선택 {len(selected)}개 브랜드 · 브랜드별 고객수 기준 TOP 10")
+                    st.caption(f"선택 {len(selected)}개 브랜드 · 브랜드별 고객수 기준 TOP 10 "
+                               "(동점이면 거래액 큰 상품 우선)")
             else:
                 st.markdown('<div class="warn-box">⚠️ 선택 브랜드의 해당 주차 상품 데이터 없음.</div>',
                             unsafe_allow_html=True)
